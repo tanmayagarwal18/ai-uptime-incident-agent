@@ -10,6 +10,7 @@ PyYAML>=6.0
 openai>=1.40
 langchain-core>=0.3
 langchain-openai>=0.2
+langchain-google-genai>=4.0
 langgraph>=0.2.60
 langgraph-checkpoint-sqlite>=2.0
 

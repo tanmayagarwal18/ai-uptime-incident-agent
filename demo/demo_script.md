@@ -4,7 +4,7 @@
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env            # add GROQ_API_KEY (free AI) and GITHUB_TOKEN (tickets), or leave empty
+cp .env.example .env            # add GEMINI_API_KEY (free AI) and GITHUB_TOKEN (tickets), or leave empty
 python scripts/check_ai.py      # confirms the AI connection before you present
 python scripts/seed_demo_data.py --reset   # 24 h of history so the charts look alive
 ```
@@ -50,7 +50,7 @@ python scripts/simulate_incident.py --mode error_500 --approve --heal
 
 ### Narration (5 lines)
 1. "Traditional monitors alert you; this one also investigates."
-2. "When a site fails, a LangGraph agent powered by an LLM (GPT-4.1 mini, or gpt-oss-120b on Groq) decides which diagnostics to run: DNS, TCP, TLS, HTTP and latency."
+2. "When a site fails, a LangGraph agent powered by an LLM (Google Gemini or GPT-4.1 mini) decides which diagnostics to run: DNS, TCP, TLS, HTTP and latency."
 3. "It turns the evidence into a ranked root cause, a SEV1–SEV4 severity and concrete actions, written up as a report."
 4. "With human approval it opens a GitHub issue, then verifies recovery and closes the loop automatically."
 5. "Everything is persisted in SQLite and visible in the dashboard, so the engineer starts with answers, not just an alert."

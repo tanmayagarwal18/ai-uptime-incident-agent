@@ -5,7 +5,7 @@
 ![LangGraph](https://img.shields.io/badge/agent-LangGraph-purple)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-An AI-powered application that monitors websites and APIs, detects failures and then **investigates them on its own**. An LLM agent (GPT-4.1 mini, or free gpt-oss-120b on Groq) chooses and runs diagnostic tools, finds the likely root cause, classifies severity, writes an incident report, opens a **GitHub issue** after human approval, and **verifies recovery**.
+An AI-powered application that monitors websites and APIs, detects failures and then **investigates them on its own**. An LLM agent (free Google Gemini by default, or GPT-4.1 mini) chooses and runs diagnostic tools, finds the likely root cause, classifies severity, writes an incident report, opens a **GitHub issue** after human approval, and **verifies recovery**.
 
 > Conventional monitors stop at the alert. This agent continues: it investigates the failure, explains the cause, files the ticket and confirms the fix.
 
@@ -82,7 +82,7 @@ More detail, including the lifecycle state machine and data model, is in [docs/a
 | Technology | Purpose |
 |---|---|
 | Python 3.11+ | Core application logic and monitoring |
-| OpenAI GPT-4.1 mini / gpt-oss-120b on Groq (free) | AI reasoning, tool selection, incident analysis |
+| Google Gemini (free) / OpenAI GPT-4.1 mini / Groq | AI reasoning, tool selection, incident analysis |
 | LangGraph | Agent workflow orchestration, state, interrupts, checkpoints |
 | Requests | HTTP health checks and diagnostics |
 | dnspython | DNS resolution diagnostics |
@@ -107,7 +107,8 @@ Edit `.env`. Everything is optional: with no token the project uses the offline 
 
 | Variable | Default | Notes |
 |---|---|---|
-| `LLM_PROVIDER` | `groq` | `groq` (free gpt-oss-120b), `openai` (paid GPT-4.1 mini), `openai_compatible` or `auto` |
+| `LLM_PROVIDER` | `gemini` | `gemini` (free), `groq` (free), `openai` (paid GPT-4.1 mini), `openai_compatible` or `auto` |
+| `GEMINI_API_KEY` | *(empty)* | Free key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
 | `GROQ_API_KEY` | *(empty)* | Free key from [console.groq.com/keys](https://console.groq.com/keys) |
 | `OPENAI_API_KEY` / `OPENAI_MODEL` | *(empty)* / `gpt-4.1-mini` | Only for the paid OpenAI API |
 | `GITHUB_TOKEN` | *(empty)* | Creates incident tickets (Issues: read and write) |
@@ -124,14 +125,17 @@ The agent works with any model that supports tool calling through an OpenAI-styl
 
 | Option | Cost | Model | Setup |
 |---|---|---|---|
-| **Groq** (default) | Free, no card | `openai/gpt-oss-120b`, OpenAI's open-weight model | `LLM_PROVIDER=groq`, `GROQ_API_KEY=gsk_...` |
+| **Google Gemini** (default) | Free, no card | `gemini-3.8-flash` | `LLM_PROVIDER=gemini`, `GEMINI_API_KEY=...` |
+| **Groq** | Free, no card | `openai/gpt-oss-120b`, OpenAI's open-weight model | `LLM_PROVIDER=groq`, `GROQ_API_KEY=gsk_...` |
 | **OpenAI** | Paid (~$0.005 per incident) | `gpt-4.1-mini` | `LLM_PROVIDER=openai`, `OPENAI_API_KEY=sk-...` |
-| **Other** | Varies | Ollama, Gemini, ... | `LLM_PROVIDER=openai_compatible`, `OPENAI_BASE_URL`, `OPENAI_MODEL` |
+| **Other** | Varies | Ollama, ... | `LLM_PROVIDER=openai_compatible`, `OPENAI_BASE_URL`, `OPENAI_MODEL` |
 | **None** | Free | Offline demo AI (rule-based) | Leave the keys empty |
 
-**Free setup with Groq:** sign up at [console.groq.com](https://console.groq.com), create a key under **API Keys**, put it in `.env` as `GROQ_API_KEY`, then run `python scripts/check_ai.py`.
+**Free setup with Gemini:** sign in at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) with a Google account, click **Create API key**, put it in `.env` as `GEMINI_API_KEY`, then run `python scripts/check_ai.py`.
 
-Groq's free plan is rate-limited (about 8,000 tokens per minute and 200,000 per day for gpt-oss-120b). The agent keeps each request small, waits automatically when the per-minute limit is hit, and an incident takes roughly 30–60 seconds. If the limit is exhausted, the offline demo AI finishes the incident and the dashboard says so.
+Gemini is connected through Google's own LangChain integration (`langchain-google-genai`), which correctly returns Gemini 3 "thought signatures" during multi-step tool calling. The free tier is rate-limited (your limits are shown in AI Studio) and Google may use free-tier prompts to improve its products, so don't send sensitive data. If the limit is reached, the offline demo AI finishes the incident and the dashboard says so.
+
+Groq is an alternative free option; its free plan allows about 8,000 tokens per minute, so an incident takes roughly 30–60 seconds.
 
 > GitHub Models, which used to offer GPT-4.1 mini for free, was retired on 30 July 2026, so it is no longer an option.
 

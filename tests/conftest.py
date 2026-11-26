@@ -14,6 +14,7 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("LLM_PROVIDER", "auto")
     monkeypatch.setenv("GROQ_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
     monkeypatch.setenv("OPENAI_BASE_URL", "")
     monkeypatch.setenv("GITHUB_TOKEN", "")
     monkeypatch.setenv("GITHUB_REPO", "octo/test-repo")

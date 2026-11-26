@@ -11,7 +11,13 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app import db
-from app.agent.llm import get_fallback_analyst_llm, get_fallback_tool_llm, get_tool_llm, llm_mode
+from app.agent.llm import (
+    get_fallback_analyst_llm,
+    get_fallback_tool_llm,
+    get_tool_llm,
+    llm_mode,
+    message_text,
+)
 from app.agent.prompts import INVESTIGATOR_SYSTEM, TRIAGE_TEMPLATE
 from app.agent.state import AgentState
 from app.config import get_settings
@@ -73,10 +79,10 @@ def investigate_node(state: AgentState) -> dict[str, Any]:
     if ai.tool_calls:
         names = ", ".join(tc["name"] for tc in ai.tool_calls)
         db.add_event(state["incident_id"], "AGENT_DECISION", f"Turn {iteration}: agent chose tools: {names}",
-                     {"reasoning": ai.content or ""})
+                     {"reasoning": message_text(ai.content)})
     else:
         db.add_event(state["incident_id"], "INVESTIGATION_COMPLETE",
-                     f"Turn {iteration}: agent finished investigating", {"findings": ai.content or ""})
+                     f"Turn {iteration}: agent finished investigating", {"findings": message_text(ai.content)})
     return {"messages": [ai], "iterations": iteration, **update}
 
 
@@ -155,7 +161,7 @@ def collect_evidence(state: AgentState) -> list[dict[str, Any]]:
 def _final_findings(state: AgentState) -> str:
     for m in reversed(state.get("messages", [])):
         if isinstance(m, AIMessage) and not m.tool_calls and m.content:
-            return str(m.content)
+            return message_text(m.content)
     return ""
 
 

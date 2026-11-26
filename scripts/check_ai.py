@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from langchain_core.messages import HumanMessage  # noqa: E402
 
-from app.agent.llm import _chat_model, describe_llm_error  # noqa: E402
+from app.agent.llm import _chat_model, describe_llm_error, message_text  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.tools import ALL_TOOLS  # noqa: E402
 
@@ -80,8 +80,8 @@ def main() -> int:
     print(f"Endpoint : {s.llm_base_url or 'https://api.openai.com/v1'}")
     if s.use_mock_llm:
         print("\nNo AI provider is configured, so the offline demo AI is used.")
-        print("To use the free Groq AI, set LLM_PROVIDER=groq and GROQ_API_KEY in .env")
-        print("(get a free key at https://console.groq.com/keys).")
+        print("To use free Google Gemini, set LLM_PROVIDER=gemini and GEMINI_API_KEY in .env")
+        print("(get a free key at https://aistudio.google.com/apikey).")
         return 1
 
     if not raw_probe(s):
@@ -90,7 +90,7 @@ def main() -> int:
     print("\n1) Sending a test message...")
     try:
         reply = _chat_model().invoke([HumanMessage(content="Reply with exactly: OK")])
-        print(f"   Model replied: {str(reply.content).strip()[:60]}")
+        print(f"   Model replied: {message_text(reply.content).strip()[:60]}")
     except Exception as exc:  # noqa: BLE001
         print(f"   FAILED: {describe_llm_error(exc)}")
         return 1

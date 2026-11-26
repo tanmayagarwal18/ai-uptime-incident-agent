@@ -19,15 +19,19 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", env_file_encoding="utf-8", extra="ignore")
 
     # ---- AI model -------------------------------------------------------------
-    # llm_provider: auto | groq | openai | openai_compatible | mock
+    # llm_provider: auto | gemini | groq | openai | openai_compatible | mock
+    #   gemini            -> free Google Gemini (GEMINI_API_KEY from aistudio.google.com)
     #   groq              -> free OpenAI gpt-oss-120b on Groq (GROQ_API_KEY from console.groq.com)
     #   openai            -> OpenAI's paid API, GPT-4.1 mini (OPENAI_API_KEY)
-    #   openai_compatible -> any OpenAI-style server via OPENAI_BASE_URL (Ollama, Gemini ...)
-    #   auto              -> openai if OPENAI_API_KEY, else groq if GROQ_API_KEY, else mock
+    #   openai_compatible -> any OpenAI-style server via OPENAI_BASE_URL (Ollama ...)
+    #   auto              -> first of openai, gemini, groq with a key set, else mock
     llm_provider: str = "auto"
     openai_api_key: str = ""
     openai_base_url: str = ""
     openai_model: str = "gpt-4.1-mini"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.8-flash"
+    gemini_base_url: str = ""               # only for tests / proxies
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-120b"
     force_mock_llm: bool = False
@@ -62,11 +66,13 @@ class Settings(BaseSettings):
         if p == "auto":
             if self.openai_api_key.strip():
                 p = "openai"
+            elif self.gemini_api_key.strip():
+                p = "gemini"
             elif self.groq_api_key.strip():
                 p = "groq"
             else:
                 return "mock"
-        if p not in ("groq", "openai", "openai_compatible"):
+        if p not in ("gemini", "groq", "openai", "openai_compatible"):
             return "mock"
         if p != "openai_compatible" and not self.llm_api_key:
             return "mock"
@@ -80,7 +86,11 @@ class Settings(BaseSettings):
     @property
     def llm_api_key(self) -> str:
         p = self._requested
-        if p == "groq" or (p == "auto" and not self.openai_api_key.strip()):
+        if p == "auto":
+            p = "openai" if self.openai_api_key.strip() else "gemini" if self.gemini_api_key.strip() else "groq"
+        if p == "gemini":
+            return self.gemini_api_key.strip()
+        if p == "groq":
             return self.groq_api_key.strip()
         if p == "openai_compatible":
             return self.openai_api_key.strip() or "not-needed"
@@ -92,16 +102,18 @@ class Settings(BaseSettings):
             return self.openai_base_url.strip()
         if self.provider == "groq":
             return "https://api.groq.com/openai/v1"
+        if self.provider == "gemini":  # OpenAI-compatible address, used only by the connection check
+            return "https://generativelanguage.googleapis.com/v1beta/openai"
         return None
 
     @property
     def llm_model_id(self) -> str:
         """Model name as the provider expects it."""
-        return (self.groq_model if self.provider == "groq" else self.openai_model).strip()
+        return {"groq": self.groq_model, "gemini": self.gemini_model}.get(self.provider, self.openai_model).strip()
 
     @property
     def is_reasoning_model(self) -> bool:
-        return "gpt-oss" in self.llm_model_id
+        return "gpt-oss" in self.llm_model_id or self.provider == "gemini"
 
     @property
     def tool_result_chars(self) -> int:
@@ -114,7 +126,7 @@ class Settings(BaseSettings):
     def max_output_tokens(self) -> int:
         if self.llm_max_output_tokens:
             return self.llm_max_output_tokens
-        return 2048 if self.is_reasoning_model else 1500
+        return 4096 if self.provider == "gemini" else 2048 if self.is_reasoning_model else 1500
 
     @property
     def llm_label(self) -> str:
@@ -122,6 +134,7 @@ class Settings(BaseSettings):
         short = self.llm_model_id.split("/")[-1]
         return {
             "mock": "Offline demo AI",
+            "gemini": f"{short} via Google Gemini (free)",
             "groq": f"{short} via Groq (free)",
             "openai": f"{short} via OpenAI",
             "openai_compatible": f"{short} via {self.llm_base_url}",

@@ -1,5 +1,5 @@
-"""LLM factories: free gpt-oss-120b on Groq, GPT-4.1 mini on OpenAI, any OpenAI-compatible server,
-or the offline demo AI. Also turns AI-service errors into plain-language reasons."""
+"""LLM factories: free Google Gemini or gpt-oss-120b on Groq, GPT-4.1 mini on OpenAI, any
+OpenAI-compatible server, or the offline demo AI. Also turns AI-service errors into plain-language reasons."""
 
 from __future__ import annotations
 
@@ -19,9 +19,18 @@ def llm_mode() -> str:
 
 
 def _chat_model() -> Any:
+    s = get_settings()
+    if s.provider == "gemini":
+        # Google's own integration: it returns Gemini 3 "thought signatures" with tool results,
+        # which the OpenAI-compatible route drops (causing 400 errors on multi-step tool use).
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        extra = {"base_url": s.gemini_base_url} if s.gemini_base_url.strip() else {}
+        return ChatGoogleGenerativeAI(model=s.llm_model_id, api_key=s.llm_api_key, reasoning_effort="low",
+                                      max_tokens=s.max_output_tokens, retries=4, request_timeout=90, **extra)
+
     from langchain_openai import ChatOpenAI
 
-    s = get_settings()
     kwargs: dict[str, Any] = {
         "model": s.llm_model_id,
         "api_key": s.llm_api_key,
@@ -58,7 +67,8 @@ def get_analyst_llm(state: dict[str, Any] | None = None, evidence: list[dict[str
     """LLM returning a structured `Diagnosis`."""
     if _use_mock(state):
         return get_fallback_analyst_llm(state or {}, evidence or [])
-    return _chat_model().with_structured_output(Diagnosis, method="function_calling")
+    method = "json_schema" if get_settings().provider == "gemini" else "function_calling"
+    return _chat_model().with_structured_output(Diagnosis, method=method)
 
 
 def get_fallback_tool_llm(state: dict[str, Any]) -> Any:
@@ -73,21 +83,32 @@ def get_fallback_analyst_llm(state: dict[str, Any], evidence: list[dict[str, Any
     return MockAnalystLLM(state, evidence)
 
 
+def message_text(content: Any) -> str:
+    """Plain text of a model message (Gemini returns a list of content blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content
+                        if not isinstance(b, dict) or b.get("type") in (None, "text")).strip()
+    return str(content or "")
+
+
 def describe_llm_error(exc: Exception) -> str:
     """Plain-language reason for an AI-service failure."""
-    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    status = (getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+              or getattr(exc, "code", None))
     text = str(exc).lower()
     provider = get_settings().provider
     if isinstance(exc, ValueError) and "got str" in text:
         return "the AI service returned an unexpected non-JSON reply - check OPENAI_BASE_URL"
-    if status == 401 or "unauthorized" in text or "invalid api key" in text:
-        key = "GROQ_API_KEY" if provider == "groq" else "OPENAI_API_KEY"
+    if status == 401 or "unauthorized" in text or "invalid api key" in text or "api key not valid" in text:
+        key = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY"}.get(provider, "OPENAI_API_KEY")
         return f"the API key was rejected - check {key} in .env"
     if status == 413 or "request too large" in text:
         return "the request was larger than the free per-minute token limit"
     if status == 403:
         return "access denied - the token lacks permission for this model"
-    if status == 429 or "rate limit" in text or "ratelimit" in text:
+    if status == 429 or "rate limit" in text or "ratelimit" in text or "resource_exhausted" in text:
         return "the free usage limit was reached - wait a while or try again tomorrow"
     if "context length" in text or "tokens_limit" in text:
         return "the request was too large for the model's limit"
