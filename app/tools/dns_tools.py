@@ -63,7 +63,8 @@ def resolve_dns_impl(hostname: str) -> dict[str, Any]:
         # Local names (localhost, /etc/hosts entries) are not in public DNS.
         try:
             addrs = sorted({ai[4][0] for ai in socket.getaddrinfo(host, None)})
-            result.update(ok=True, source="system resolver (hosts file / local)", records={"A": addrs})
+            result.update(ok=True, source="system resolver (hosts file / local)", records={"A": addrs},
+                          public_dns_errors=result.pop("errors"), errors={})
         except socket.gaierror as exc:
             result["system_resolver_error"] = str(exc)
     return result
