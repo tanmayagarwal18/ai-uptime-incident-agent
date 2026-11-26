@@ -183,9 +183,17 @@ The full script with talking points is in [demo/demo_script.md](demo/demo_script
 
 ## 📸 Screenshots
 
-| Overview | Incident investigation |
-|---|---|
-| _add `docs/screenshots/overview.png`_ | _add `docs/screenshots/incident.png`_ |
+**Overview:** the banner colour follows overall health; each card shows the last 40 checks.
+
+![Overview](docs/screenshots/overview.png)
+
+**Incident case file:** progress, the decision needed, and the AI's findings in plain language.
+
+![Incident](docs/screenshots/incident.png)
+
+**How the AI investigated:** the tests it chose in each round and what each one found.
+
+![Investigation trace](docs/screenshots/investigation.png)
 
 ## 🔭 Future work
 
