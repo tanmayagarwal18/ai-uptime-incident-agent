@@ -210,4 +210,97 @@ def route_after_approval(state: AgentState) -> str:
 
 def reject_node(state: AgentState) -> dict[str, Any]:
     db.update_incident(state["incident_id"], status="REJECTED")
+    _refresh_report(state)
     return {}
+
+
+def _refresh_report(state: AgentState) -> None:
+    """Re-render the stored report so its status and timeline stay current."""
+    from app.reporting.report import render_report
+
+    incident_id = state["incident_id"]
+    inc = db.get_incident(incident_id)
+    if inc and state.get("diagnosis"):
+        db.update_incident(incident_id, report_md=render_report(
+            inc, state["diagnosis"], db.list_tool_runs(incident_id), db.list_events(incident_id), state["site"]))
+
+
+# ------------------------------------------------------------------ GitHub ticket
+def create_ticket_node(state: AgentState) -> dict[str, Any]:
+    """Create the GitHub issue (or record a dry-run payload)."""
+    from app.integrations.github_client import GitHubClient, GitHubError
+
+    incident_id = state["incident_id"]
+    diag, site = state["diagnosis"], state["site"]
+    top = diag["probable_causes"][0]["cause"] if diag.get("probable_causes") else "service failure"
+    title = f"[{diag['severity']}] {site['name']}: {top} (incident #{incident_id})"
+    body = (db.get_incident(incident_id) or {}).get("report_md") or state.get("report_md", "")
+    labels = ["incident", f"severity:{diag['severity']}", f"site:{site['name']}"[:50]]
+
+    client = GitHubClient.from_settings()
+    try:
+        issue = client.create_issue(title, body, labels)
+    except GitHubError as exc:
+        log.error("GitHub issue creation failed: %s", exc)
+        db.add_event(incident_id, "TICKET_FAILED", f"GitHub API error - payload stored locally: {exc}")
+        issue = {"dry_run": True, "number": None, "html_url": None, "error": str(exc),
+                 "payload": {"title": title, "body": body, "labels": labels}}
+
+    db.update_incident(incident_id, status="TICKET_CREATED", github_issue_number=issue.get("number"),
+                       github_issue_url=issue.get("html_url"), github_payload_json=issue["payload"])
+    if issue.get("html_url"):
+        db.add_event(incident_id, "TICKET_CREATED", f"GitHub issue #{issue['number']} created", {"url": issue["html_url"]})
+    elif not issue.get("error"):
+        db.add_event(incident_id, "TICKET_CREATED", "GitHub dry-run: issue payload recorded (no token configured)")
+    _refresh_report(state)
+    return {"issue": {k: v for k, v in issue.items() if k != "payload"}}
+
+
+# ------------------------------------------------------------------ recovery verification
+def await_recovery_node(state: AgentState) -> dict[str, Any]:
+    """Pause until someone (dashboard button, API or the monitor's auto-verify) asks to verify recovery."""
+    from langgraph.types import interrupt
+
+    interrupt({"type": "await_recovery", "incident_id": state["incident_id"]})
+    return {}
+
+
+def verify_recovery_node(state: AgentState) -> dict[str, Any]:
+    """Re-run the health check; resolve the incident and close the GitHub issue if the site is healthy."""
+    from app.config import SiteConfig
+    from app.integrations.github_client import GitHubClient, GitHubError
+    from app.monitor.checker import check_site
+
+    incident_id = state["incident_id"]
+    site = SiteConfig(**state["site"])
+    result = check_site(site)
+    db.insert_check(result.model_dump(mode="json"))
+    verification = result.model_dump(mode="json")
+    issue = state.get("issue") or {}
+    client = GitHubClient.from_settings()
+    recovered = result.status == "UP"
+
+    if recovered:
+        db.update_incident(incident_id, status="RESOLVED", resolved_at=db.utcnow())
+        db.add_event(incident_id, "RESOLVED",
+                     f"Recovery verified: HTTP {result.status_code} in {result.response_time_ms:.0f} ms", verification)
+        comment = (f"✅ **Recovery verified** by the AI incident agent at {result.timestamp} UTC.\n\n"
+                   f"- HTTP status: `{result.status_code}`\n- Response time: `{result.response_time_ms:.0f} ms`\n\n"
+                   "Closing this incident.")
+    else:
+        db.add_event(incident_id, "STILL_FAILING",
+                     f"Recovery check failed: {result.status} {result.status_code or result.error_type}", verification)
+        comment = (f"⚠️ Recovery check at {result.timestamp} UTC: still **{result.status}** "
+                   f"(`{result.status_code or result.error_type}`). Incident remains open.")
+    try:
+        client.add_comment(issue.get("number"), comment)
+        if recovered:
+            client.close_issue(issue.get("number"))
+    except GitHubError as exc:
+        db.add_event(incident_id, "GITHUB_UPDATE_FAILED", str(exc))
+    _refresh_report(state)
+    return {"recovered": recovered, "verification": verification}
+
+
+def route_after_verify(state: AgentState) -> str:
+    return "done" if state.get("recovered") else "retry"

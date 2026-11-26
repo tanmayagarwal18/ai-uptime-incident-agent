@@ -96,3 +96,42 @@ def test_mock_diagnosis_rules():
         {"tool": "measure_latency_samples", "args": {}, "result": {"avg_ms": 2400, "p95_ms": 2600, "success_rate": 1.0}},
     ])
     assert slow.severity == "SEV3" and "Performance" in slow.probable_causes[0].cause
+
+
+def test_full_lifecycle_dry_run_ticket_and_recovery(failing_site):
+    incident_id = _open_incident(failing_site)
+    runner.start_investigation(incident_id)
+    assert runner.submit_approval(incident_id, approved=True, reviewer="tester") == "await_recovery"
+
+    inc = db.get_incident(incident_id)
+    assert inc["status"] == "TICKET_CREATED"
+    payload = inc["github_payload"]  # dry-run: no token configured
+    assert payload["title"].startswith("[SEV1] orders:")
+    assert "incident" in payload["labels"] and "severity:SEV1" in payload["labels"]
+
+    # still failing -> stays open, graph waits again
+    first = runner.verify_recovery(incident_id)
+    assert first["recovered"] is False and db.get_incident(incident_id)["status"] == "TICKET_CREATED"
+    assert runner.pending_action(incident_id) == "await_recovery"
+
+    # fixed -> resolved
+    _Handler.status = 200
+    second = runner.verify_recovery(incident_id)
+    assert second["recovered"] is True
+    inc = db.get_incident(incident_id)
+    assert inc["status"] == "RESOLVED" and inc["resolved_at"]
+    assert runner.pending_action(incident_id) is None
+    events = [e["event_type"] for e in db.list_events(incident_id)]
+    assert events.index("APPROVED") < events.index("TICKET_CREATED") < events.index("STILL_FAILING") < events.index("RESOLVED")
+
+
+def test_auto_verify_resolves_when_site_back_up(failing_site, monkeypatch):
+    monkeypatch.setenv("REQUIRE_HUMAN_APPROVAL", "false")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    incident_id = _open_incident(failing_site)
+    assert runner.start_investigation(incident_id) == "await_recovery"  # auto-approved
+    _Handler.status = 200
+    run_cycle([failing_site])
+    assert runner.auto_verify_open_incidents() == [incident_id]

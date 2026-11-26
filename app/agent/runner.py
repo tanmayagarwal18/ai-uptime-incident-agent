@@ -67,3 +67,39 @@ def submit_approval(incident_id: int, approved: bool, reviewer: str = "dashboard
         raise ValueError(f"Incident #{incident_id} is not awaiting approval")
     get_graph().invoke(Command(resume={"approved": approved, "reviewer": reviewer}), _config(incident_id))
     return pending_action(incident_id)
+
+
+def verify_recovery(incident_id: int) -> dict[str, Any]:
+    """Run the recovery check for an incident. Resumes the graph if it is waiting for verification;
+    otherwise (e.g. still awaiting approval) performs a plain health check and reports the result."""
+    if pending_action(incident_id) == "await_recovery":
+        get_graph().invoke(Command(resume={"action": "verify"}), _config(incident_id))
+        inc = db.get_incident(incident_id)
+        events = db.list_events(incident_id)
+        return {"status": inc["status"], "recovered": inc["status"] == "RESOLVED",
+                "message": events[-1]["message"] if events else ""}
+
+    from app.config import SiteConfig
+    from app.monitor.checker import check_site
+
+    inc = db.get_incident(incident_id)
+    if inc is None:
+        raise ValueError(f"Incident #{incident_id} not found")
+    site = SiteConfig(**((inc.get("trigger") or {}).get("site") or {"name": inc["site"], "url": ""}))
+    result = check_site(site)
+    db.insert_check(result.model_dump(mode="json"))
+    return {"status": inc["status"], "recovered": result.status == "UP",
+            "message": f"Health check: {result.status} ({result.status_code or result.error_type}). "
+                       "Incident is not awaiting verification, status unchanged."}
+
+
+def auto_verify_open_incidents() -> list[int]:
+    """Called by the monitor after each cycle: if a ticketed incident's site is UP again, verify & resolve it."""
+    resolved = []
+    for inc in db.list_incidents(status="TICKET_CREATED"):
+        latest = db.recent_checks(inc["site"], limit=1)
+        if latest and latest[0]["status"] == "UP" and pending_action(inc["id"]) == "await_recovery":
+            log.info("Site %s is UP again - auto-verifying incident #%s", inc["site"], inc["id"])
+            if verify_recovery(inc["id"])["recovered"]:
+                resolved.append(inc["id"])
+    return resolved
