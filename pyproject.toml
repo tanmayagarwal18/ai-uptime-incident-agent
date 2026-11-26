@@ -1,0 +1,21 @@
+[project]
+name = "ai-uptime-incident-agent"
+version = "1.0.0"
+description = "AI-powered website uptime monitoring and incident response agent (LangGraph + GPT-4.1 mini)"
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -1,0 +1,27 @@
+# Core
+requests>=2.32
+dnspython>=2.6
+pydantic>=2.7
+pydantic-settings>=2.3
+python-dotenv>=1.0
+PyYAML>=6.0
+
+# AI agent
+openai>=1.40
+langchain-core>=0.3
+langchain-openai>=0.2
+langgraph>=0.2.60
+langgraph-checkpoint-sqlite>=2.0
+
+# Dashboard & API
+streamlit>=1.37
+plotly>=5.22
+pandas>=2.2
+fastapi>=0.115
+uvicorn>=0.30
+
+# Dev / tests
+pytest>=8.0
+responses>=0.25
+httpx>=0.27
+ruff>=0.6
