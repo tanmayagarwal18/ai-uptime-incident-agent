@@ -22,3 +22,4 @@ class AgentState(TypedDict, total=False):
     issue: dict[str, Any]                      # GitHub issue info (or dry-run payload)
     recovered: bool
     verification: dict[str, Any]               # last recovery check
+    llm_fallback: bool                         # AI service failed; offline demo AI took over

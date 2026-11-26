@@ -75,7 +75,7 @@ def seed(hours: int) -> None:
         opened = iso(slow_from + timedelta(minutes=10))
         resolved = iso(slow_to + timedelta(minutes=5))
         db.update_incident(iid, status="RESOLVED", severity=diag["severity"], diagnosis_json=diag, opened_at=opened,
-                           resolved_at=resolved, llm_mode="mock (offline rule-based)")
+                           resolved_at=resolved, llm_mode="Offline demo AI")
         with db.get_conn() as conn:
             conn.execute("UPDATE incident_events SET timestamp=? WHERE incident_id=?", (opened, iid))
         db.add_event(iid, "RESOLVED", "Recovery verified: HTTP 200 in 24 ms (seeded history)")

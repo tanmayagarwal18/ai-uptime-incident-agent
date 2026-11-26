@@ -255,6 +255,7 @@ def case_header(inc: dict[str, Any], site_url: str | None) -> str:
         f'<div class="case-top">{severity_pill(inc.get("severity"))}{incident_pill(inc["status"])}</div>',
         f'<div class="case-title">Incident #{inc["id"]}: {e(inc["site"])}</div>',
         f'<div class="case-meta">{e(when)}{" | " + e(site_url) if site_url else ""}</div>',
+        f'<div class="case-meta">Analysed by: {e(inc.get("llm_mode") or "not analysed yet")}</div>',
         stepper(inc),
         "</div>",
     )
@@ -353,7 +354,8 @@ EVENT_TEXT = {
     "AUTO_APPROVED": ("good", "Ticket auto-approved"), "REJECTED": ("", "Ticket dismissed"),
     "TICKET_CREATED": ("good", "GitHub ticket filed"), "TICKET_FAILED": ("bad", "GitHub ticket failed"),
     "STILL_FAILING": ("bad", "Recovery check: still failing"), "RESOLVED": ("good", "Recovery verified, incident resolved"),
-    "AGENT_ERROR": ("bad", "Agent error"), "GITHUB_UPDATE_FAILED": ("bad", "GitHub update failed"),
+    "AGENT_ERROR": ("bad", "Agent error"),
+    "AI_FALLBACK": ("bad", "AI service unavailable, offline demo AI took over"), "GITHUB_UPDATE_FAILED": ("bad", "GitHub update failed"),
 }
 
 

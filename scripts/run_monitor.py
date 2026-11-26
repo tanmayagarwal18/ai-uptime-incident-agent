@@ -42,7 +42,7 @@ def main() -> None:
     services.bootstrap()
     s = get_settings()
     log.info("LLM: %s | GitHub: %s | approval required: %s",
-             "mock (offline)" if s.use_mock_llm else s.openai_model,
+             s.llm_label,
              s.github_repo if s.github_enabled else "dry-run", s.require_human_approval)
     if args.once:
         new = run_cycle(on_incident=services.handle_new_incident)

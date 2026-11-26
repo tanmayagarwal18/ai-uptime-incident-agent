@@ -50,7 +50,7 @@ def _incident_or_404(incident_id: int) -> dict[str, Any]:
 @app.get("/health", tags=["meta"])
 def health() -> dict[str, Any]:
     s = get_settings()
-    return {"status": "ok", "llm": "mock" if s.use_mock_llm else s.openai_model,
+    return {"status": "ok", "llm": "mock" if s.use_mock_llm else s.llm_model_id, "llm_provider": s.provider,
             "github": "enabled" if s.github_enabled else "dry-run", "require_human_approval": s.require_human_approval}
 
 

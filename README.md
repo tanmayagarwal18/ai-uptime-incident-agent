@@ -82,7 +82,7 @@ More detail, including the lifecycle state machine and data model, is in [docs/a
 | Technology | Purpose |
 |---|---|
 | Python 3.11+ | Core application logic and monitoring |
-| OpenAI GPT-4.1 mini | AI reasoning, tool selection, incident analysis |
+| OpenAI GPT-4.1 mini (free via GitHub Models) | AI reasoning, tool selection, incident analysis |
 | LangGraph | Agent workflow orchestration, state, interrupts, checkpoints |
 | Requests | HTTP health checks and diagnostics |
 | dnspython | DNS resolution diagnostics |
@@ -103,25 +103,41 @@ pip install -r requirements.txt
 cp .env.example .env               # Windows: copy .env.example .env
 ```
 
-Edit `.env` (both keys are optional):
+Edit `.env`. Everything is optional: with no token the project uses the offline demo AI and simulated tickets.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OPENAI_API_KEY` | *(empty)* | Empty → offline mock LLM |
-| `OPENAI_MODEL` | `gpt-4.1-mini` | Any tool-calling OpenAI model |
-| `GITHUB_TOKEN` | *(empty)* | Empty → dry-run (payload shown in dashboard) |
+| `LLM_PROVIDER` | `github_models` | `github_models` (free GPT-4.1 mini), `openai`, `openai_compatible` or `auto` |
+| `OPENAI_MODEL` | `gpt-4.1-mini` | Model name |
+| `GITHUB_TOKEN` | *(empty)* | Used for both free GPT-4.1 mini and incident tickets (see below) |
 | `GITHUB_REPO` | `owner/repo` | Repository where incident issues are created |
+| `LLM_FALLBACK_TO_MOCK` | `true` | If the AI service fails (free limit, bad token), finish with the offline AI |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | *(empty)* | Only for the paid OpenAI API or another OpenAI-compatible server |
 | `REQUIRE_HUMAN_APPROVAL` | `true` | `false` lets the agent file tickets automatically |
 | `AUTO_VERIFY_RECOVERY` | `true` | Monitor resolves ticketed incidents once the site is healthy |
 | `CHECK_INTERVAL_SECONDS` | `30` | Monitoring interval |
 
 Monitored targets live in [`config/sites.yaml`](config/sites.yaml).
 
-### GitHub token
+### Free GPT-4.1 mini + GitHub tickets with one token
+The agent uses **GPT-4.1 mini through [GitHub Models](https://github.com/marketplace/models)**, which every GitHub account can use for free within rate limits. One fine-grained token covers both the AI and the tickets:
+
 1. GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**
-2. Repository access: **Only select repositories** → this repo
-3. Permissions → Repository → **Issues: Read and write**
-4. Paste the token into `.env` as `GITHUB_TOKEN`, and set `GITHUB_REPO=<your-username>/ai-uptime-incident-agent`
+2. **Repository access:** Only select repositories → this repo
+3. **Permissions:**
+   - Repository permissions → **Issues: Read and write** (incident tickets)
+   - Account permissions → **Models: Read-only** (free GPT-4.1 mini)
+4. In `.env` set:
+   ```
+   LLM_PROVIDER=github_models
+   GITHUB_TOKEN=github_pat_...
+   GITHUB_REPO=<your-username>/ai-uptime-incident-agent
+   ```
+5. Check it works: `python scripts/check_ai.py`
+
+The free tier is rate-limited (roughly 15 requests/minute and 150/day for GPT-4.1 mini). One incident uses 3–6 AI requests. If the limit is reached, the incident is finished by the offline demo AI and the dashboard says so.
+
+**Other options:** `LLM_PROVIDER=openai` with `OPENAI_API_KEY` (paid OpenAI API), or `LLM_PROVIDER=openai_compatible` with `OPENAI_BASE_URL` and `OPENAI_MODEL` for Groq, Google Gemini or a local Ollama model.
 
 ## ▶️ Running
 
@@ -132,6 +148,7 @@ Monitored targets live in [`config/sites.yaml`](config/sites.yaml).
 | Dashboard | `make dashboard` | `python -m streamlit run dashboard/streamlit_app.py` |
 | REST API | `make api` | `python -m uvicorn app.api.main:app --port 8000` |
 | Seed 24 h history | `make seed` | `python scripts/seed_demo_data.py --reset` |
+| Check AI connection | - | `python scripts/check_ai.py` |
 | CLI end-to-end | `make simulate` | `python scripts/simulate_incident.py --mode error_500 --approve --heal` |
 | Tests / lint | `make test` / `make lint` | `pytest` / `ruff check .` |
 

@@ -11,7 +11,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app import db
-from app.agent.llm import get_tool_llm, llm_mode
+from app.agent.llm import get_fallback_analyst_llm, get_fallback_tool_llm, get_tool_llm, llm_mode
 from app.agent.prompts import INVESTIGATOR_SYSTEM, TRIAGE_TEMPLATE
 from app.agent.state import AgentState
 from app.config import get_settings
@@ -63,8 +63,12 @@ def triage_node(state: AgentState) -> dict[str, Any]:
 # ------------------------------------------------------------------ investigate (LLM chooses tools)
 def investigate_node(state: AgentState) -> dict[str, Any]:
     """One reasoning turn: the LLM looks at the evidence so far and either calls tools or stops."""
-    llm = get_tool_llm(state)
-    ai: AIMessage = llm.invoke(state["messages"])
+    update: dict[str, Any] = {}
+    try:
+        ai: AIMessage = get_tool_llm(state).invoke(state["messages"])
+    except Exception as exc:  # noqa: BLE001 - AI service failure (quota, auth, network)
+        update = _fall_back(state, exc)
+        ai = get_fallback_tool_llm(state).invoke(state["messages"])
     iteration = state.get("iterations", 0) + 1
     if ai.tool_calls:
         names = ", ".join(tc["name"] for tc in ai.tool_calls)
@@ -73,7 +77,22 @@ def investigate_node(state: AgentState) -> dict[str, Any]:
     else:
         db.add_event(state["incident_id"], "INVESTIGATION_COMPLETE",
                      f"Turn {iteration}: agent finished investigating", {"findings": ai.content or ""})
-    return {"messages": [ai], "iterations": iteration}
+    return {"messages": [ai], "iterations": iteration, **update}
+
+
+def _fall_back(state: AgentState, exc: Exception) -> dict[str, Any]:
+    """Switch this incident to the offline demo AI after an AI-service error (or re-raise if disabled)."""
+    from app.agent.llm import describe_llm_error
+
+    reason = describe_llm_error(exc)
+    log.error("AI service failed for incident #%s: %s", state["incident_id"], exc)
+    if not get_settings().llm_fallback_to_mock:
+        raise exc
+    db.add_event(state["incident_id"], "AI_FALLBACK",
+                 f"The AI service failed ({reason}). Finished with the offline demo AI instead.")
+    db.update_incident(state["incident_id"], llm_mode=f"Offline demo AI (fallback: {reason})")
+    state["llm_fallback"] = True
+    return {"llm_fallback": True}
 
 
 def route_after_investigate(state: AgentState) -> str:
@@ -107,8 +126,9 @@ def tools_node(state: AgentState) -> dict[str, Any]:
         db.insert_tool_run(state["incident_id"], call["name"], call.get("args") or {}, result, duration,
                            state.get("iterations", 0))
         content = json.dumps(result, default=str)
-        if len(content) > 4000:
-            content = content[:4000] + "...(truncated)"
+        limit = get_settings().llm_max_tool_result_chars
+        if len(content) > limit:
+            content = content[:limit] + "...(truncated)"
         messages.append(ToolMessage(content=content, tool_call_id=call["id"], name=call["name"]))
     return {"messages": messages}
 
@@ -146,19 +166,25 @@ def analyze_node(state: AgentState) -> dict[str, Any]:
 
     evidence = collect_evidence(state)
     evidence_text = "\n".join(
-        f"[{i}] {e['tool']}({json.dumps(e['args'])}) -> {json.dumps(e['result'], default=str)[:1500]}"
+        f"[{i}] {e['tool']}({json.dumps(e['args'])}) -> {json.dumps(e['result'], default=str)[:get_settings().llm_max_tool_result_chars]}"
         for i, e in enumerate(evidence, 1)
     )
     prompt = (f"{state['triage_summary']}\n\nDIAGNOSTIC EVIDENCE:\n{evidence_text or '(no tools were run)'}\n\n"
               f"INVESTIGATOR FINDINGS:\n{_final_findings(state) or '(none)'}\n\nProduce the structured diagnosis.")
-    diagnosis = get_analyst_llm(state, evidence).invoke([SystemMessage(content=ANALYST_SYSTEM), HumanMessage(content=prompt)])
+    messages = [SystemMessage(content=ANALYST_SYSTEM), HumanMessage(content=prompt)]
+    update: dict[str, Any] = {}
+    try:
+        diagnosis = get_analyst_llm(state, evidence).invoke(messages)
+    except Exception as exc:  # noqa: BLE001 - AI service failure
+        update = _fall_back(state, exc)
+        diagnosis = get_fallback_analyst_llm(state, evidence).invoke(messages)
     diag = diagnosis.model_dump()
     diag["probable_causes"] = sorted(diag["probable_causes"], key=lambda c: c["confidence"], reverse=True)
 
     top = diag["probable_causes"][0]["cause"] if diag["probable_causes"] else "unknown"
     db.update_incident(state["incident_id"], severity=diag["severity"], diagnosis_json=diag)
     db.add_event(state["incident_id"], "DIAGNOSED", f"Severity {diag['severity']} - most likely cause: {top}")
-    return {"diagnosis": diag}
+    return {"diagnosis": diag, **update}
 
 
 # ------------------------------------------------------------------ report

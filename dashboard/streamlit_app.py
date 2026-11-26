@@ -80,7 +80,7 @@ def sidebar() -> str:
             st.session_state["selected_incident"] = st.session_state.pop("_goto_incident")
         page = st.radio("Go to", PAGES, key="page", format_func=PAGE_LABELS.get)
 
-        ai = "Offline demo AI" if settings.use_mock_llm else settings.openai_model
+        ai = settings.llm_label
         gh = settings.github_repo if settings.github_enabled else "Simulated (no token)"
         approval = "Required" if settings.require_human_approval else "Automatic"
         show('<div class="side-title">Current setup</div><dl class="cfg">'

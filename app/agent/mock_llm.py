@@ -1,4 +1,4 @@
-"""Deterministic, rule-based stand-in for the LLM so the whole agent runs offline (no OPENAI_API_KEY).
+"""Deterministic, rule-based stand-in for the LLM so the whole agent runs offline (no AI provider configured).
 
 It mimics the real agent's behaviour: it *chooses* diagnostic tools in rounds based on what earlier tools
 returned, then produces a structured Diagnosis from the evidence with the same severity criteria.
