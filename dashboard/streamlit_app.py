@@ -53,8 +53,8 @@ def fmt_ms(v) -> str:
 
 
 def go_to_incident(incident_id: int) -> None:
-    st.session_state["page"] = "Incidents"
-    st.session_state["selected_incident"] = incident_id
+    """Request navigation; applied at the top of the next run, before widgets are created."""
+    st.session_state["_goto_incident"] = incident_id
 
 
 # ====================================================================== sidebar
@@ -62,6 +62,9 @@ def sidebar() -> str:
     with st.sidebar:
         st.title("🛰️ Uptime Agent")
         st.caption("AI website monitoring & incident response")
+        if "_goto_incident" in st.session_state:
+            st.session_state["page"] = "Incidents"
+            st.session_state["selected_incident"] = st.session_state.pop("_goto_incident")
         page = st.radio("Navigate", PAGES, key="page")
         st.divider()
         st.markdown("**Agent configuration**")
@@ -69,7 +72,41 @@ def sidebar() -> str:
         st.markdown(f"- GitHub: `{settings.github_repo if settings.github_enabled else 'dry-run'}`")
         st.markdown(f"- Human approval: `{'required' if settings.require_human_approval else 'off'}`")
         st.toggle("Auto-refresh (15 s)", key="auto_refresh", value=True)
+        demo_control()
     return page
+
+
+def demo_control() -> None:
+    """Sidebar panel that drives the flaky demo server so incidents can be shown live."""
+    st.divider()
+    st.markdown("**🎬 Demo control**")
+    current = services.demo_mode()
+    if current is None:
+        st.caption(f"Demo server not reachable at `{settings.demo_server_url}`. Start it with `make demo-server`.")
+        return
+    modes = list(current["available_modes"])
+    st.caption(f"Orders API mode: **{current['mode']}**")
+    mode = st.selectbox("Failure mode", modes, index=modes.index("error_500") if "error_500" in modes else 0,
+                        help="\n".join(f"- {k}: {v}" for k, v in current["available_modes"].items()))
+    st.caption(current["available_modes"][mode])
+    c1, c2 = st.columns(2)
+    if c1.button("💥 Simulate incident", type="primary", key="simulate", disabled=mode == "healthy"):
+        with st.spinner(f"Switching to '{mode}', running checks, agent investigating..."):
+            try:
+                incident_id = services.simulate_incident(mode)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Simulation failed: {exc}")
+                return
+        if incident_id:
+            go_to_incident(incident_id)
+            st.rerun()
+        else:
+            st.warning("No incident opened (failure threshold not reached yet) - try Run checks now.")
+    if c2.button("🩹 Fix (healthy)", key="heal"):
+        services.set_demo_mode("healthy")
+        st.toast("Demo server is healthy again - click Verify recovery on the incident.")
+        st.rerun()
+    st.caption("Tip: stop the demo server process to simulate a full outage (connection refused).")
 
 
 # ====================================================================== overview
