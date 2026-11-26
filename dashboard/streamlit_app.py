@@ -5,12 +5,11 @@ Run:  python -m streamlit run dashboard/streamlit_app.py
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import json  # noqa: E402
 
 import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
@@ -18,25 +17,16 @@ import streamlit as st  # noqa: E402
 
 from app import db, services  # noqa: E402
 from app.config import get_settings, load_sites, setup_logging  # noqa: E402
+from dashboard import ui  # noqa: E402
 
 st.set_page_config(page_title="AI Uptime Incident Agent", layout="wide")
 setup_logging()
-
-# Reference palette (dataviz skill): one series hue + reserved status colours, always paired with a text label.
-SERIES = "#257de0"
-MUTED = "#8a8a8a"
-STATUS_COLORS = {"UP": "#0aac23", "DEGRADED": "#fbb315", "DOWN": "#dc3c3d", "UNKNOWN": MUTED}
-# Colour tones for Streamlit badges (meaning is always carried by the text label too)
-STATUS_TONE = {"UP": "green", "DEGRADED": "orange", "DOWN": "red", "UNKNOWN": "gray"}
-SEV_TONE = {"SEV1": "red", "SEV2": "orange", "SEV3": "blue", "SEV4": "green"}
-INCIDENT_TONE = {"OPEN": "red", "INVESTIGATING": "blue", "AWAITING_APPROVAL": "orange", "TICKET_CREATED": "violet",
-                 "RESOLVED": "green", "REJECTED": "gray"}
-# Text colours for table cells
-CELL_COLORS = {"UP": "#0aac23", "DEGRADED": "#c98a00", "DOWN": "#dc3c3d", "SEV1": "#dc3c3d", "SEV2": "#e0702b",
-               "SEV3": "#257de0", "SEV4": "#0aac23", "OPEN": "#dc3c3d", "INVESTIGATING": "#257de0",
-               "AWAITING_APPROVAL": "#c98a00", "TICKET_CREATED": "#6a4ce2", "RESOLVED": "#0aac23", "REJECTED": MUTED}
+st.markdown(f"<style>{ui.CSS_PATH.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
 
 PAGES = ["Overview", "Site detail", "Incidents"]
+PAGE_LABELS = {"Overview": "Overview", "Site detail": "Site history", "Incidents": "Incidents"}
+COLORS = {"line": "#0B7A88", "fill": "rgba(24,183,199,0.12)", "UP": "#16A34A", "DEGRADED": "#D99A06",
+          "DOWN": "#E0464B", "muted": "#7C879E", "grid": "rgba(20,33,61,0.07)", "ink": "#14213D"}
 
 
 @st.cache_resource
@@ -49,24 +39,8 @@ _bootstrap()
 settings = get_settings()
 
 
-def badge(status: str | None) -> str:
-    """Plain-text status (used where markdown is not rendered, e.g. metrics)."""
-    return status or "UNKNOWN"
-
-
-def md_badge(text: str | None, tones: dict[str, str]) -> str:
-    """Coloured Streamlit markdown badge, e.g. :green-badge[UP]."""
-    text = text or "UNKNOWN"
-    return f":{tones.get(text, 'gray')}-badge[{text.replace('_', ' ')}]"
-
-
-def color_cells(value) -> str:
-    color = CELL_COLORS.get(str(value).strip())
-    return f"color: {color}; font-weight: 600" if color else ""
-
-
-def fmt_ms(v) -> str:
-    return "-" if v is None or pd.isna(v) else f"{v:,.0f} ms"
+def show(markup: str) -> None:
+    st.markdown(markup, unsafe_allow_html=True)
 
 
 def go_to_incident(incident_id: int) -> None:
@@ -74,41 +48,65 @@ def go_to_incident(incident_id: int) -> None:
     st.session_state["_goto_incident"] = incident_id
 
 
+def flash(kind: str, message: str) -> None:
+    st.session_state["_flash"] = (kind, message)
+
+
+def show_flash() -> None:
+    if "_flash" in st.session_state:
+        kind, message = st.session_state.pop("_flash")
+        getattr(st, kind)(message)
+
+
+def themed(fig: go.Figure, height: int) -> go.Figure:
+    fig.update_layout(
+        height=height, margin={"l": 8, "r": 8, "t": 8, "b": 8}, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#FFFFFF", font={"family": "Manrope, system-ui, sans-serif", "color": COLORS["ink"], "size": 12},
+        hoverlabel={"bgcolor": "#FFFFFF", "font_size": 12, "bordercolor": "#DCE3EE"},
+        legend={"orientation": "h", "y": 1.12, "x": 0},
+    )
+    fig.update_xaxes(showgrid=False, linecolor="#DCE3EE")
+    fig.update_yaxes(gridcolor=COLORS["grid"], zeroline=False)
+    return fig
+
+
 # ====================================================================== sidebar
 def sidebar() -> str:
     with st.sidebar:
-        st.title("Uptime Agent")
-        st.caption("AI website monitoring & incident response")
+        show('<div class="brand"><div class="brand-name">Uptime Agent</div>'
+             '<div class="brand-tag">Watches your websites and investigates problems with AI</div></div>')
         if "_goto_incident" in st.session_state:
             st.session_state["page"] = "Incidents"
             st.session_state["selected_incident"] = st.session_state.pop("_goto_incident")
-        page = st.radio("Navigate", PAGES, key="page")
+        page = st.radio("Go to", PAGES, key="page", format_func=PAGE_LABELS.get)
+
+        ai = "Offline demo AI" if settings.use_mock_llm else settings.openai_model
+        gh = settings.github_repo if settings.github_enabled else "Simulated (no token)"
+        approval = "Required" if settings.require_human_approval else "Automatic"
+        show('<div class="side-title">Current setup</div><dl class="cfg">'
+             f"<dt>AI model</dt><dd>{ui.e(ai)}</dd><dt>GitHub tickets</dt><dd>{ui.e(gh)}</dd>"
+             f"<dt>Approval</dt><dd>{approval}</dd></dl>")
+        st.toggle("Refresh automatically", key="auto_refresh", value=True, help="Reload the data every 15 seconds")
         st.divider()
-        st.markdown("**Agent configuration**")
-        st.markdown(f"- LLM: `{'mock (offline)' if settings.use_mock_llm else settings.openai_model}`")
-        st.markdown(f"- GitHub: `{settings.github_repo if settings.github_enabled else 'dry-run'}`")
-        st.markdown(f"- Human approval: `{'required' if settings.require_human_approval else 'off'}`")
-        st.toggle("Auto-refresh (15 s)", key="auto_refresh", value=True)
         demo_control()
     return page
 
 
 def demo_control() -> None:
-    """Sidebar panel that drives the flaky demo server so incidents can be shown live."""
-    st.divider()
-    st.markdown("**Demo control**")
+    """Drives the flaky demo server so incidents can be shown live."""
+    show('<div class="side-title">Demo control</div>'
+         '<div class="side-help">Make the demo shop\'s Orders API fail on purpose and watch the AI respond.</div>')
     current = services.demo_mode()
     if current is None:
-        st.caption(f"Demo server not reachable at `{settings.demo_server_url}`. Start it with `make demo-server`.")
+        st.caption(f"The demo website isn't running at {settings.demo_server_url}. "
+                   "Start it with: python -m uvicorn demo.flaky_server:app --port 8001")
         return
     modes = list(current["available_modes"])
-    st.caption(f"Orders API mode: **{current['mode']}**")
-    mode = st.selectbox("Failure mode", modes, index=modes.index("error_500") if "error_500" in modes else 0,
-                        help="\n".join(f"- {k}: {v}" for k, v in current["available_modes"].items()))
-    st.caption(current["available_modes"][mode])
-    c1, c2 = st.columns(2)
-    if c1.button("Simulate incident", type="primary", key="simulate", disabled=mode == "healthy"):
-        with st.spinner(f"Switching to '{mode}', running checks, agent investigating..."):
+    show(f'<div class="side-help">Right now: <b>{ui.e(ui.DEMO_MODES.get(current["mode"], current["mode"]))}</b></div>')
+    mode = st.selectbox("Problem to simulate", [m for m in modes if m != "healthy"],
+                        format_func=lambda m: ui.DEMO_MODES.get(m, m), key="demo_mode_choice")
+    if st.button("Simulate incident", type="primary", key="simulate", width="stretch"):
+        with st.spinner("Breaking the demo site and letting the AI investigate..."):
             try:
                 incident_id = services.simulate_incident(mode)
             except Exception as exc:  # noqa: BLE001
@@ -118,139 +116,129 @@ def demo_control() -> None:
             go_to_incident(incident_id)
             st.rerun()
         else:
-            st.warning("No incident opened (failure threshold not reached yet) - try Run checks now.")
-    if c2.button("Fix (healthy)", key="heal"):
+            st.warning("No incident opened yet. The site must fail several checks in a row; click Run checks now.")
+    if st.button("Fix the demo site", key="heal", width="stretch",
+                 help="Make the demo site healthy again, then verify recovery on the incident"):
         services.set_demo_mode("healthy")
-        st.toast("Demo server is healthy again - click Verify recovery on the incident.")
+        flash("success", "The demo site is fixed. Open the incident and click Verify recovery.")
         st.rerun()
-    st.caption("Tip: stop the demo server process to simulate a full outage (connection refused).")
 
 
 # ====================================================================== overview
-def run_checks_button(key: str) -> None:
-    if st.button("Run checks now", key=key, type="primary"):
-        with st.spinner("Checking all sites (the agent investigates any new incident)..."):
-            new = services.run_checks_now()
-        if new:
-            st.warning(f"New incident(s) opened: {', '.join(f'#{i}' for i in new)}")
-        else:
-            st.success("Checks complete")
-
-
 def overview_page() -> None:
-    st.header("Overview")
-    stats = pd.DataFrame(services.site_stats(24))
+    show_flash()
+    stats = services.site_stats(24)
     incidents = db.list_incidents(limit=500)
     open_incidents = [i for i in incidents if i["status"] in db.OPEN_STATUSES]
+    awaiting = sum(1 for i in incidents if i["status"] == "AWAITING_APPROVAL")
+    show(ui.hero(stats, len(open_incidents), awaiting, settings.check_interval_seconds))
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Sites monitored", len(stats))
-    c2.metric("Currently down", int((stats["status"] == "DOWN").sum()) if not stats.empty else 0)
-    c3.metric("Degraded", int((stats["status"] == "DEGRADED").sum()) if not stats.empty else 0)
-    c4.metric("Open incidents", len(open_incidents))
-    uptime = stats["uptime_pct"].dropna()
-    c5.metric("Avg uptime (24h)", f"{uptime.mean():.2f}%" if not uptime.empty else "-")
+    head, btn = st.columns([5, 1], vertical_alignment="bottom")
+    with head:
+        show(ui.section("Services", "Each bar is one check, newest on the right. Hover a bar for details."))
+    with btn:
+        if st.button("Run checks now", key="run_overview", type="primary", width="stretch"):
+            with st.spinner("Checking every site..."):
+                new = services.run_checks_now()
+            flash("warning" if new else "success",
+                  f"New incident opened: {', '.join(f'#{i}' for i in new)}" if new else "All sites checked.")
+            st.rerun()
 
-    left, right = st.columns([3, 1])
-    with right:
-        run_checks_button("run_overview")
-    with left:
-        st.subheader("Site status")
-    if stats.empty or stats["last_checked"].isna().all():
-        st.info("No checks yet. Click **Run checks now**, start the monitor (`make monitor`) or seed demo data (`make seed`).")
-    table = pd.DataFrame({
-        "Status": stats["status"].map(badge),
-        "Site": stats["site"],
-        "URL": stats["url"],
-        "Critical": stats["critical"].map(lambda c: "yes" if c else ""),
-        "HTTP": stats["last_status_code"].map(lambda v: "-" if pd.isna(v) else str(int(v))),
-        "Response": stats["last_response_ms"].map(fmt_ms),
-        "Uptime 24h": stats["uptime_pct"].map(lambda v: "-" if pd.isna(v) else f"{v:.2f}%"),
-        "Avg latency": stats["avg_latency_ms"].map(fmt_ms),
-        "Open incident": stats["open_incident"].map(lambda v: "-" if pd.isna(v) else f"#{int(v)}"),
-        "Last checked (UTC)": stats["last_checked"].fillna("-"),
-    })
-    st.dataframe(table.style.map(color_cells, subset=["Status"]), hide_index=True, width="stretch")
+    sites = {s.name: s for s in load_sites()}
+    latest = {c["site"]: c for c in db.latest_check_per_site()}
+    cards = [ui.site_card(sites[s["site"]], s, db.recent_checks(s["site"], 40), latest.get(s["site"]))
+             for s in stats if s["site"] in sites]
+    show('<div class="site-grid">' + "".join(cards) + "</div>" + ui.legend())
 
-    st.subheader("Latest incidents")
+    show(ui.section("Incidents", "Problems the AI has investigated, newest first"))
     if not incidents:
-        st.caption("No incidents yet.")
-    for inc in incidents[:5]:
-        cols = st.columns([1, 2, 5, 2, 1])
-        cols[0].markdown(f"**#{inc['id']}**")
-        cols[1].markdown(md_badge(inc["status"], INCIDENT_TONE))
-        cols[2].markdown((md_badge(inc["severity"], SEV_TONE) + " " if inc["severity"] else "") + inc["summary"][:90])
-        cols[3].caption(inc["opened_at"])
-        cols[4].button("Open", key=f"open_{inc['id']}", on_click=go_to_incident, args=(inc["id"],))
+        show('<div class="empty-note">No incidents so far. To see the AI at work, choose a problem under '
+             '<b>Demo control</b> in the sidebar and click <b>Simulate incident</b>.</div>')
+    for inc in incidents[:6]:
+        row, act = st.columns([7, 1], vertical_alignment="center")
+        with row:
+            show(ui.incident_row(inc))
+        act.button("Open", key=f"open_{inc['id']}", on_click=go_to_incident, args=(inc["id"],), width="stretch")
+
+    with st.expander("How this works"):
+        show(ui.how_it_works())
 
 
 # ====================================================================== site detail
 def site_detail_page() -> None:
-    st.header("Site detail")
     sites = load_sites()
-    names = [s.name for s in sites]
+    show(ui.section("Site history", "Speed and availability of one site over time"))
     col_a, col_b = st.columns([3, 1])
-    name = col_a.selectbox("Site", names, key="site_detail")
-    hours = col_b.selectbox("Window", [1, 6, 24, 72], index=2, format_func=lambda h: f"Last {h} h")
+    name = col_a.selectbox("Site", [s.name for s in sites], key="site_detail")
+    hours = col_b.selectbox("Time range", [1, 6, 24, 72], index=2, format_func=lambda h: f"Last {h} hours")
     site = next(s for s in sites if s.name == name)
     rows = pd.DataFrame(db.checks_since(hours, site=name))
-    st.caption(f"{site.url} - threshold {site.latency_threshold_ms} ms - expected HTTP {site.expected_status}"
-               + (" - **critical service**" if site.critical else ""))
     if rows.empty:
-        st.info("No checks in this window yet.")
+        show('<div class="empty-note">No checks in this time range yet. Click <b>Run checks now</b> on the '
+             'Overview page, or start the monitor.</div>')
         return
 
     rows["ts"] = pd.to_datetime(rows["timestamp"])
-    up = rows[rows["status"] != "DOWN"]
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Current status", badge(rows.iloc[-1]["status"]))
-    c2.metric("Uptime", f"{100 * len(up) / len(rows):.2f}%")
-    c3.metric("Avg latency", fmt_ms(up["response_time_ms"].mean() if not up.empty else None))
-    c4.metric("p95 latency", fmt_ms(up["response_time_ms"].quantile(0.95) if not up.empty else None))
+    ok = rows[rows["status"] != "DOWN"]
+    latest = rows.iloc[-1].to_dict()
+    uptime = 100 * len(ok) / len(rows)
+    avg = ok["response_time_ms"].mean() if not ok.empty else None
+    p95 = ok["response_time_ms"].quantile(0.95) if not ok.empty else None
+    failures = int((rows["status"] != "UP").sum())
 
-    st.subheader("Response time")
+    show(ui.tiles([
+        ("Status now", ui.status_pill(latest["status"]), ui.explain_check(latest, site.latency_threshold_ms)),
+        ("Uptime", f"{uptime:.2f}%", f"{len(rows)} checks in range"),
+        ("Average response", ui.ms(avg), f"Speed limit {site.latency_threshold_ms:,} ms"),
+        ("Slowest 5% of checks", ui.ms(p95), "95th percentile"),
+        ("Problems", str(failures), "Checks that were slow or down"),
+    ]))
+    verdict = ("well within" if avg is not None and avg < 0.5 * site.latency_threshold_ms
+               else "within" if avg is not None and avg <= site.latency_threshold_ms else "above")
+    show(f'<div class="summary">Over the last {hours} hours, <b>{ui.e(name)}</b> was available '
+         f"<b>{uptime:.2f}%</b> of the time. On average it answered in <b>{ui.ms(avg)}</b>, {verdict} its "
+         f"speed limit of {site.latency_threshold_ms:,} ms"
+         + (f", and had <b>{failures}</b> problem check{'s' if failures != 1 else ''}." if failures else
+            ", with no problems.") + "</div>")
+
+    show(ui.section("Response time", "Lower is better. The dashed line is the speed limit for this site."))
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=rows["ts"], y=rows["response_time_ms"], mode="lines", name="Response time",
-        line={"color": SERIES, "width": 2},
-        hovertemplate="%{x|%H:%M:%S}<br>%{y:,.0f} ms<extra></extra>",
-    ))
-    failed = rows[rows["status"] != "UP"]
-    for status in ("DEGRADED", "DOWN"):
-        pts = failed[failed["status"] == status]
-        if not pts.empty:
-            fig.add_trace(go.Scatter(
-                x=pts["ts"], y=pts["response_time_ms"], mode="markers", name=status,
-                marker={"color": STATUS_COLORS[status], "size": 9, "line": {"color": "white", "width": 2}},
-                customdata=pts[["status_code", "error_type"]].fillna("-"),
-                hovertemplate="%{x|%H:%M:%S}<br>%{y:,.0f} ms<br>" + status + " %{customdata[0]} %{customdata[1]}<extra></extra>",
-            ))
-    fig.add_hline(y=site.latency_threshold_ms, line={"color": MUTED, "dash": "dash", "width": 1},
-                  annotation_text=f"threshold {site.latency_threshold_ms} ms", annotation_position="top left")
-    fig.update_layout(height=340, margin={"l": 10, "r": 10, "t": 10, "b": 10}, hovermode="x unified",
-                      yaxis_title="ms", legend={"orientation": "h", "y": 1.12},
-                      xaxis={"showgrid": False}, yaxis={"gridcolor": "rgba(128,128,128,0.15)"})
-    st.plotly_chart(fig, width="stretch")
-
-    st.subheader("Status timeline")
-    tl = go.Figure()
-    for status in ("UP", "DEGRADED", "DOWN"):
+    fig.add_trace(go.Scatter(x=rows["ts"], y=rows["response_time_ms"], mode="lines", name="Response time",
+                             line={"color": COLORS["line"], "width": 2}, fill="tozeroy", fillcolor=COLORS["fill"],
+                             hovertemplate="%{x|%d %b %H:%M}<br>%{y:,.0f} ms<extra></extra>"))
+    for status, label in (("DEGRADED", "Slow"), ("DOWN", "Down")):
         pts = rows[rows["status"] == status]
         if not pts.empty:
-            tl.add_trace(go.Scatter(
-                x=pts["ts"], y=[status] * len(pts), mode="markers", name=status,
-                marker={"color": STATUS_COLORS[status], "size": 10, "symbol": "square"},
-                hovertemplate="%{x|%H:%M:%S} " + status + "<extra></extra>",
-            ))
-    tl.update_layout(height=170, margin={"l": 10, "r": 10, "t": 10, "b": 10}, showlegend=False,
-                     yaxis={"categoryorder": "array", "categoryarray": ["DOWN", "DEGRADED", "UP"]},
-                     xaxis={"showgrid": False})
-    st.plotly_chart(tl, width="stretch")
+            fig.add_trace(go.Scatter(
+                x=pts["ts"], y=pts["response_time_ms"], mode="markers", name=label,
+                marker={"color": COLORS[status], "size": 10, "line": {"color": "#FFFFFF", "width": 2}},
+                hovertemplate="%{x|%d %b %H:%M}<br>" + label + ", %{y:,.0f} ms<extra></extra>"))
+    fig.add_hline(y=site.latency_threshold_ms, line={"color": COLORS["muted"], "dash": "dash", "width": 1},
+                  annotation_text=f"speed limit {site.latency_threshold_ms:,} ms", annotation_position="top left")
+    fig.update_yaxes(title_text="milliseconds")
+    st.plotly_chart(themed(fig, 340), width="stretch")
 
-    with st.expander("Recent checks (table view)"):
-        view = rows.sort_values("id", ascending=False)[
-            ["timestamp", "status", "status_code", "response_time_ms", "error_type", "error_message"]].head(100)
-        st.dataframe(view, hide_index=True, width="stretch")
+    show(ui.section("Availability timeline", "Each square is one check"))
+    tl = go.Figure()
+    for status, label in (("UP", "Healthy"), ("DEGRADED", "Slow"), ("DOWN", "Down")):
+        pts = rows[rows["status"] == status]
+        if not pts.empty:
+            tl.add_trace(go.Scatter(x=pts["ts"], y=[label] * len(pts), mode="markers", name=label,
+                                    marker={"color": COLORS[status], "size": 11, "symbol": "square"},
+                                    hovertemplate="%{x|%d %b %H:%M} " + label + "<extra></extra>"))
+    tl.update_layout(showlegend=False)
+    tl.update_yaxes(categoryorder="array", categoryarray=["Down", "Slow", "Healthy"])
+    st.plotly_chart(themed(tl, 180), width="stretch")
+
+    with st.expander("See every check as a table"):
+        view = rows.sort_values("id", ascending=False).head(200)
+        st.dataframe(pd.DataFrame({
+            "Time": view["timestamp"].map(ui.clock),
+            "Result": view["status"].map(lambda s: ui.STATUS.get(s, ("", s))[1]),
+            "HTTP code": view["status_code"].map(lambda v: "-" if pd.isna(v) else str(int(v))),
+            "Response": view["response_time_ms"].map(ui.ms),
+            "What happened": [ui.explain_check(r, site.latency_threshold_ms) for r in view.to_dict("records")],
+        }), hide_index=True, width="stretch")
 
 
 # ====================================================================== incidents
@@ -258,149 +246,172 @@ def incidents_page() -> None:
     from app.agent import runner
     from app.reporting.report import summarize_tool_result
 
-    st.header("Incidents")
+    show_flash()
     all_incidents = db.list_incidents(limit=500)
+    show(ui.section("Incidents", "Every problem the AI detected, what it found, and what to do"))
     if not all_incidents:
-        st.info("No incidents yet. Use **Demo control > Simulate incident** in the sidebar to trigger one.")
+        show('<div class="empty-note">No incidents yet. Choose a problem under <b>Demo control</b> in the sidebar '
+             'and click <b>Simulate incident</b> to see the AI investigate.</div>')
         return
 
-    f1, f2, f3 = st.columns(3)
-    status_f = f1.multiselect("Status", list(INCIDENT_TONE), placeholder="All statuses")
-    site_f = f2.multiselect("Site", sorted({i["site"] for i in all_incidents}), placeholder="All sites")
-    sev_f = f3.multiselect("Severity", list(SEV_TONE), placeholder="All severities")
-    incidents = [i for i in all_incidents
-                 if (not status_f or i["status"] in status_f) and (not site_f or i["site"] in site_f)
-                 and (not sev_f or i["severity"] in sev_f)]
-    incident_table = pd.DataFrame([{
-        "ID": f"#{i['id']}", "Status": i["status"],
-        "Severity": i["severity"] or "-", "Site": i["site"],
-        "Summary": i["summary"], "Opened (UTC)": i["opened_at"], "Resolved (UTC)": i["resolved_at"] or "-",
-        "GitHub": i["github_issue_url"] or ("dry-run" if i["github_payload_json"] else "-"),
-    } for i in incidents])
-    if incidents:
-        st.dataframe(incident_table.style.map(color_cells, subset=["Status", "Severity"]), hide_index=True,
-                     width="stretch", height=min(38 * (len(incidents) + 1), 300))
-    else:
-        st.caption("No incidents match the selected filters.")
-
-    ids = [i["id"] for i in incidents] or [all_incidents[0]["id"]]
+    ids = [i["id"] for i in all_incidents]
     if st.session_state.get("selected_incident") not in ids:
         st.session_state["selected_incident"] = ids[0]
-    labels = {i["id"]: f"#{i['id']} - {i['site']} - {i['status']}" for i in all_incidents}
-    incident_id = st.selectbox("Incident", ids, format_func=lambda x: labels[x], key="selected_incident")
+    labels = {i["id"]: f"#{i['id']}  {i['site']}  ({ui.INCIDENT.get(i['status'], ('', i['status']))[1]})"
+              for i in all_incidents}
+    incident_id = st.selectbox("Choose an incident", ids, format_func=lambda x: labels[x], key="selected_incident")
+
+    with st.expander(f"Browse all incidents ({len(all_incidents)})"):
+        f1, f2 = st.columns(2)
+        status_f = f1.multiselect("Status", list(ui.INCIDENT), format_func=lambda s: ui.INCIDENT[s][1],
+                                  placeholder="Any status")
+        sev_f = f2.multiselect("Severity", list(ui.SEVERITY), format_func=lambda s: ui.SEVERITY[s][1],
+                               placeholder="Any severity")
+        shown = [i for i in all_incidents
+                 if (not status_f or i["status"] in status_f) and (not sev_f or i["severity"] in sev_f)]
+        if shown:
+            st.dataframe(pd.DataFrame([{
+                "Incident": f"#{i['id']}", "Site": i["site"],
+                "Severity": ui.SEVERITY.get(i["severity"] or "", ("", "Not rated"))[1],
+                "Status": ui.INCIDENT.get(i["status"], ("", i["status"]))[1],
+                "Opened": ui.clock(i["opened_at"]), "Duration": ui.duration(i["opened_at"], i["resolved_at"]),
+            } for i in shown]), hide_index=True, width="stretch")
+        else:
+            st.caption("No incidents match these filters.")
+
     inc = db.get_incident(incident_id)
     pending = runner.pending_action(incident_id)
     diag = inc.get("diagnosis") or {}
+    site_url = ((inc.get("trigger") or {}).get("site") or {}).get("url")
+    show(ui.case_header(inc, site_url))
+    action_bar(inc, pending, incident_id)
+    show(ui.panels(inc, diag))
 
-    st.divider()
-    head, actions = st.columns([3, 2])
-    with head:
-        st.subheader(f"#{inc['id']} - {inc['site']}")
-        st.markdown(f"{md_badge(inc['severity'] or 'Unclassified', SEV_TONE)} "
-                    f"{md_badge(inc['status'], INCIDENT_TONE)} opened {inc['opened_at']} UTC"
-                    + (f", resolved {inc['resolved_at']} UTC" if inc["resolved_at"] else ""))
-        st.write(inc["summary"])
-        if diag.get("impact_summary"):
-            st.markdown(f"**Impact:** {diag['impact_summary']}")
-        if inc.get("llm_mode"):
-            st.caption(f"Analysed by: {inc['llm_mode']}")
-
-    with actions:
-        st.markdown("**Actions**")
-        if pending == "approval":
-            st.warning("The agent is waiting for approval to create a GitHub issue.")
-            b1, b2 = st.columns(2)
-            if b1.button("Approve & create ticket", type="primary", key="approve"):
-                with st.spinner("Creating GitHub issue..."):
-                    runner.submit_approval(incident_id, True, reviewer="dashboard")
-                st.rerun()
-            if b2.button("Reject", key="reject"):
-                runner.submit_approval(incident_id, False, reviewer="dashboard")
-                st.rerun()
-        if inc["github_issue_url"]:
-            st.link_button(f"Open GitHub issue #{inc['github_issue_number']}", inc["github_issue_url"])
-        elif inc["github_payload_json"]:
-            st.info("GitHub dry-run: issue payload recorded (see the GitHub tab). Set GITHUB_TOKEN to create real issues.")
-        if inc["status"] not in ("RESOLVED", "REJECTED"):
-            if st.button("Verify recovery", key="verify"):
-                with st.spinner("Re-checking the site..."):
-                    result = runner.verify_recovery(incident_id)
-                (st.success if result["recovered"] else st.error)(result["message"])
-                if inc["status"] == "TICKET_CREATED":
-                    st.rerun()
-        if inc["status"] in ("OPEN",) and pending is None:
-            if st.button("Run AI investigation", key="investigate"):
-                with st.spinner("Agent investigating..."):
-                    services.handle_new_incident(incident_id)
-                st.rerun()
-        if inc["status"] == "RESOLVED":
-            st.success("Recovery verified - incident resolved.")
-
-    trace_tab, rca_tab, report_tab, gh_tab, timeline_tab = st.tabs(
-        ["Agent investigation trace", "Root cause & actions", "Incident report", "GitHub", "Timeline"])
-
-    with trace_tab:
+    t1, t2, t3, t4, t5 = st.tabs(["How the AI investigated", "All possible causes", "Full report",
+                                  "GitHub ticket", "Timeline"])
+    with t1:
         runs = db.list_tool_runs(incident_id)
-        decisions = [e for e in db.list_events(incident_id) if e["event_type"] in ("AGENT_DECISION", "INVESTIGATION_COMPLETE")]
+        events = db.list_events(incident_id)
+        decisions = [ev for ev in events if ev["event_type"] == "AGENT_DECISION"]
         if not runs:
-            st.caption("The agent has not run any tools yet.")
-        for turn in sorted({r["iteration"] for r in runs}):
-            reasoning = next((d for d in decisions if d["message"].startswith(f"Turn {turn}:")), None)
-            st.markdown(f"**Turn {turn}** - {reasoning['message'].split(': ', 1)[1] if reasoning else ''}")
-            if reasoning and reasoning.get("data_json"):
-                why = json.loads(reasoning["data_json"]).get("reasoning")
-                if why:
-                    st.caption(f"Reasoning: {why}")
-            for r in [r for r in runs if r["iteration"] == turn]:
-                ok = (r["result"] or {}).get("ok", True) if isinstance(r["result"], dict) else True
-                with st.expander(f"{':green[OK]' if ok else ':orange[Issue]'} `{r['tool_name']}` - "
-                                 f"{summarize_tool_result(r['tool_name'], r['result'])}  ({r['duration_ms']:.0f} ms)"):
-                    st.markdown("**Arguments**")
-                    st.json(r["args"])
-                    st.markdown("**Result**")
-                    st.json(r["result"])
-        done = next((d for d in decisions if d["event_type"] == "INVESTIGATION_COMPLETE"), None)
-        if done and done.get("data_json"):
-            st.success(f"Findings: {json.loads(done['data_json']).get('findings', '')}")
-
-    with rca_tab:
-        if not diag:
-            st.caption("No diagnosis yet.")
+            st.caption("The AI hasn't run any tests yet.")
         else:
-            st.markdown(f"**Severity:** {md_badge(diag['severity'], SEV_TONE)} - {diag.get('severity_reason', '')}")
-            st.markdown(f"**Overall confidence:** {round(diag.get('confidence', 0) * 100)}%")
-            st.markdown("#### Probable causes")
-            for i, c in enumerate(diag.get("probable_causes", []), 1):
-                st.markdown(f"**{i}. {c['cause']}**")
-                st.progress(float(c["confidence"]), text=f"confidence {round(c['confidence'] * 100)}%")
-                for ev in c.get("evidence", []):
-                    st.markdown(f"- {ev}")
-            st.markdown("#### Recommended actions")
-            st.markdown("\n".join(f"{i}. {a}" for i, a in enumerate(diag.get("recommended_actions", []), 1)))
+            st.caption("The AI decided which tests to run in each round, based on what the previous round found.")
+        for turn in sorted({r["iteration"] for r in runs}):
+            turn_runs = [r for r in runs if r["iteration"] == turn]
+            why = next((json.loads(d["data_json"]).get("reasoning", "") for d in decisions
+                        if d["message"].startswith(f"Turn {turn}:") and d.get("data_json")), "")
+            show(f'<div class="round"><div class="round-head">Round {turn} <span class="pill ai">'
+                 f'{len(turn_runs)} test{"s" if len(turn_runs) != 1 else ""}</span></div>'
+                 + (f'<div class="round-why">{ui.e(why)}</div>' if why else "") + "</div>")
+            show("".join(ui.tool_row(r, summarize_tool_result(r["tool_name"], r["result"])) for r in turn_runs))
+        done = next((ev for ev in events if ev["event_type"] == "INVESTIGATION_COMPLETE" and ev.get("data_json")), None)
+        if done:
+            show(f'<div class="finding"><b>Conclusion:</b> {ui.e(json.loads(done["data_json"]).get("findings", ""))}</div>')
+        if runs:
+            with st.expander("Show the raw test data"):
+                for r in runs:
+                    st.markdown(f"**{ui.TOOL_NAMES.get(r['tool_name'], r['tool_name'])}** (`{r['tool_name']}`)")
+                    st.json({"input": r["args"], "result": r["result"]}, expanded=False)
 
-    with report_tab:
+    with t2:
+        if not diag:
+            st.caption("The diagnosis isn't ready yet.")
+        else:
+            sev = ui.SEVERITY.get(diag["severity"])
+            show(f'<div class="summary"><b>Severity: {sev[1] if sev else diag["severity"]}.</b> '
+                 f'{ui.e(diag.get("severity_reason", ""))}<br>Overall AI confidence: '
+                 f'<b>{round(diag.get("confidence", 0) * 100)}%</b></div>')
+            for i, c in enumerate(diag.get("probable_causes", []), 1):
+                conf = round(float(c["confidence"]) * 100)
+                evidence = "".join(f"<li>{ui.e(x)}</li>" for x in c.get("evidence", []))
+                show(f'<div class="panel" style="margin-top:12px"><h4>{"Most likely" if i == 1 else f"Possibility {i}"}'
+                     f'</h4><div class="cause">{ui.e(c["cause"])}</div><div class="meter"><i style="width:{conf}%">'
+                     f'</i></div><div class="meter-cap">Confidence {conf}%</div>'
+                     f'<p style="margin:10px 0 4px"><b>Evidence</b></p><ul>{evidence}</ul></div>')
+            actions = "".join(f"<li>{ui.e(a)}</li>" for a in diag.get("recommended_actions", []))
+            show(f'<div class="panel ai" style="margin-top:12px"><h4>All recommended actions</h4><ol>{actions}</ol></div>')
+
+    with t3:
         if inc["report_md"]:
             st.download_button("Download report (.md)", inc["report_md"], file_name=f"incident-{incident_id}.md")
             with st.container(border=True):
                 st.markdown(inc["report_md"])
         else:
-            st.caption("Report not generated yet.")
+            st.caption("The report isn't written yet.")
 
-    with gh_tab:
+    with t4:
         payload = inc.get("github_payload")
         if inc["github_issue_url"]:
-            st.markdown(f"Issue: [{inc['github_issue_url']}]({inc['github_issue_url']})")
+            st.link_button(f"Open GitHub issue #{inc['github_issue_number']}", inc["github_issue_url"])
+        elif payload:
+            st.caption("No GitHub token is set, so this is a preview of the issue that would be filed.")
         if payload:
-            st.markdown(f"**Title:** {payload['title']}")
-            st.markdown("**Labels:** " + " ".join(f"`{lbl}`" for lbl in payload["labels"]))
-            with st.expander("Issue body"):
+            show(f'<div class="summary"><b>Title:</b> {ui.e(payload["title"])}<br><b>Labels:</b> '
+                 + " ".join(f'<span class="pill none">{ui.e(lbl)}</span>' for lbl in payload["labels"]) + "</div>")
+            with st.expander("Issue text"):
                 st.code(payload["body"], language="markdown")
-        else:
-            st.caption("No GitHub issue yet" + (" - awaiting approval." if pending == "approval" else "."))
+        elif not inc["github_issue_url"]:
+            st.caption("No ticket yet." + (" It will be filed when you approve." if pending == "approval" else ""))
 
-    with timeline_tab:
-        for e in db.list_events(incident_id):
-            st.markdown(f"`{e['timestamp']}` **{e['event_type']}** - {e['message'] or ''}")
+    with t5:
+        show(ui.timeline(db.list_events(incident_id)))
+
+
+def action_bar(inc: dict, pending: str | None, incident_id: int) -> None:
+    """The one thing the user should do next for this incident, explained in plain words."""
+    from app.agent import runner
+
+    status = inc["status"]
+    if pending == "approval":
+        show(ui.callout("decide", "Your decision is needed",
+                        "The AI recommends filing a GitHub issue with its report. Approve to file it, or dismiss it "
+                        "if this is a false alarm."))
+    elif status == "TICKET_CREATED":
+        where = "on GitHub" if inc["github_issue_url"] else "(simulated, no GitHub token)"
+        show(ui.callout("wait", "Waiting for the fix",
+                        f"A ticket was filed {where}. Once the service has been fixed, verify that it works again "
+                        "to close the incident."))
+    elif status == "RESOLVED":
+        show(ui.callout("done", "Resolved",
+                        f"The site was re-checked and is healthy again. Total time: "
+                        f"{ui.duration(inc['opened_at'], inc['resolved_at'])}."))
+    elif status == "REJECTED":
+        show(ui.callout("idle", "Dismissed", "This incident was dismissed, so no ticket was filed."))
+    elif status == "INVESTIGATING":
+        show(ui.callout("wait", "The AI is investigating", "Results will appear here in a moment."))
+    elif status == "OPEN" and pending is None:
+        show(ui.callout("idle", "Not investigated yet", "Start the AI investigation to find the cause."))
+        if st.button("Run AI investigation", key="investigate", type="primary"):
+            with st.spinner("The AI is investigating..."):
+                services.handle_new_incident(incident_id)
+            st.rerun()
+
+    cols = st.columns([2.2, 1.2, 1.8, 2.8])
+    slot = 0
+    if pending == "approval":
+        if cols[0].button("Approve & create ticket", type="primary", key="approve", width="stretch"):
+            with st.spinner("Filing the GitHub issue..."):
+                runner.submit_approval(incident_id, True, reviewer="dashboard")
+            flash("success", "Approved. The ticket has been filed.")
+            st.rerun()
+        if cols[1].button("Dismiss", key="reject", width="stretch"):
+            runner.submit_approval(incident_id, False, reviewer="dashboard")
+            flash("info", "Dismissed. No ticket was filed.")
+            st.rerun()
+        slot = 2
+    if status not in ("RESOLVED", "REJECTED"):
+        verify_type = "primary" if status == "TICKET_CREATED" else "secondary"
+        if cols[slot].button("Verify recovery", type=verify_type, key="verify", width="stretch",
+                          help="Re-check the site now. If it's healthy, the incident is closed."):
+            with st.spinner("Re-checking the site..."):
+                result = runner.verify_recovery(incident_id)
+            flash("success" if result["recovered"] else "error",
+                  ("The site is healthy again. " if result["recovered"] else "Still failing. ") + result["message"])
+            st.rerun()
+        slot += 1
+    if inc["github_issue_url"]:
+        cols[slot].link_button("Open GitHub issue", inc["github_issue_url"], width="stretch")
 
 
 # ====================================================================== main

@@ -39,7 +39,11 @@ def summarize_tool_result(name: str, r: Any) -> str:
         if name == "check_redirects":
             return f"{r.get('redirect_count')} redirect(s) -> {r.get('final_status')} {r.get('final_url')}"[:120]
         if name == "get_recent_checks":
-            return f"{r.get('count')} checks, up-ratio {r.get('up_ratio')}, last success {r.get('last_successful_check') or 'none'}"
+            last = r.get("last_successful_check")
+            last_txt = f"{last[11:16]} UTC" if last else "none in this window"
+            ratio = r.get("up_ratio")
+            pct = f"{round(ratio * 100)}% healthy" if ratio is not None else "no data"
+            return f"last {r.get('count')} checks: {pct}, last healthy check {last_txt}"
         if name == "get_past_incidents":
             return f"{r.get('past_incident_count')} past incident(s)" + (" - recurring" if r.get("recurring") else "")
     except Exception:  # noqa: BLE001
