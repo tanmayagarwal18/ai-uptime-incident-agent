@@ -151,7 +151,7 @@ def analyze_node(state: AgentState) -> dict[str, Any]:
     )
     prompt = (f"{state['triage_summary']}\n\nDIAGNOSTIC EVIDENCE:\n{evidence_text or '(no tools were run)'}\n\n"
               f"INVESTIGATOR FINDINGS:\n{_final_findings(state) or '(none)'}\n\nProduce the structured diagnosis.")
-    diagnosis = get_analyst_llm().invoke([SystemMessage(content=ANALYST_SYSTEM), HumanMessage(content=prompt)])
+    diagnosis = get_analyst_llm(state, evidence).invoke([SystemMessage(content=ANALYST_SYSTEM), HumanMessage(content=prompt)])
     diag = diagnosis.model_dump()
     diag["probable_causes"] = sorted(diag["probable_causes"], key=lambda c: c["confidence"], reverse=True)
 
