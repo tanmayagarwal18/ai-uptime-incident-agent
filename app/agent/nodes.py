@@ -174,3 +174,40 @@ def report_node(state: AgentState) -> dict[str, Any]:
     )
     db.update_incident(incident_id, report_md=report)
     return {"report_md": report}
+
+
+# ------------------------------------------------------------------ human-in-the-loop approval
+def approval_gate_node(state: AgentState) -> dict[str, Any]:
+    """Pause for a human to approve creating the GitHub issue (LangGraph interrupt)."""
+    from langgraph.types import interrupt
+
+    incident_id = state["incident_id"]
+    if not get_settings().require_human_approval:
+        db.add_event(incident_id, "AUTO_APPROVED", "Human approval disabled - ticket creation auto-approved")
+        return {"approved": True, "reviewer": "auto"}
+
+    inc = db.get_incident(incident_id)
+    if inc and inc["status"] != "AWAITING_APPROVAL":
+        db.update_incident(incident_id, status="AWAITING_APPROVAL")
+        db.add_event(incident_id, "AWAITING_APPROVAL", "Waiting for human approval to create the GitHub issue")
+
+    decision = interrupt({
+        "type": "approval",
+        "incident_id": incident_id,
+        "question": "Create a GitHub issue for this incident?",
+        "severity": state.get("diagnosis", {}).get("severity"),
+    })
+    approved = bool(decision.get("approved")) if isinstance(decision, dict) else bool(decision)
+    reviewer = decision.get("reviewer", "operator") if isinstance(decision, dict) else "operator"
+    db.add_event(incident_id, "APPROVED" if approved else "REJECTED",
+                 f"Ticket creation {'approved' if approved else 'rejected'} by {reviewer}")
+    return {"approved": approved, "reviewer": reviewer}
+
+
+def route_after_approval(state: AgentState) -> str:
+    return "create_ticket" if state.get("approved") else "reject"
+
+
+def reject_node(state: AgentState) -> dict[str, Any]:
+    db.update_incident(state["incident_id"], status="REJECTED")
+    return {}

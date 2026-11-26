@@ -10,6 +10,7 @@ from app.models import Diagnosis
 from app.tools import ALL_TOOLS
 
 log = logging.getLogger(__name__)
+_warned = False
 
 
 def llm_mode() -> str:
@@ -29,7 +30,10 @@ def get_tool_llm(state: dict[str, Any]) -> Any:
     if get_settings().use_mock_llm:
         from app.agent.mock_llm import MockToolCallingLLM
 
-        log.warning("OPENAI_API_KEY not set - using offline mock LLM")
+        global _warned
+        if not _warned:
+            log.warning("OPENAI_API_KEY not set - using offline mock LLM")
+            _warned = True
         return MockToolCallingLLM(state)
     return _chat_model().bind_tools(ALL_TOOLS)
 
