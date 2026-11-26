@@ -80,7 +80,8 @@ def main() -> int:
     print(f"Endpoint : {s.llm_base_url or 'https://api.openai.com/v1'}")
     if s.use_mock_llm:
         print("\nNo AI provider is configured, so the offline demo AI is used.")
-        print("To use free GPT-4.1 mini, set LLM_PROVIDER=github_models and GITHUB_TOKEN in .env.")
+        print("To use the free Groq AI, set LLM_PROVIDER=groq and GROQ_API_KEY in .env")
+        print("(get a free key at https://console.groq.com/keys).")
         return 1
 
     if not raw_probe(s):

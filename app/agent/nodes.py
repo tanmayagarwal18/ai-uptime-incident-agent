@@ -126,7 +126,7 @@ def tools_node(state: AgentState) -> dict[str, Any]:
         db.insert_tool_run(state["incident_id"], call["name"], call.get("args") or {}, result, duration,
                            state.get("iterations", 0))
         content = json.dumps(result, default=str)
-        limit = get_settings().llm_max_tool_result_chars
+        limit = get_settings().tool_result_chars
         if len(content) > limit:
             content = content[:limit] + "...(truncated)"
         messages.append(ToolMessage(content=content, tool_call_id=call["id"], name=call["name"]))
@@ -166,7 +166,7 @@ def analyze_node(state: AgentState) -> dict[str, Any]:
 
     evidence = collect_evidence(state)
     evidence_text = "\n".join(
-        f"[{i}] {e['tool']}({json.dumps(e['args'])}) -> {json.dumps(e['result'], default=str)[:get_settings().llm_max_tool_result_chars]}"
+        f"[{i}] {e['tool']}({json.dumps(e['args'])}) -> {json.dumps(e['result'], default=str)[:get_settings().tool_result_chars]}"
         for i, e in enumerate(evidence, 1)
     )
     prompt = (f"{state['triage_summary']}\n\nDIAGNOSTIC EVIDENCE:\n{evidence_text or '(no tools were run)'}\n\n"

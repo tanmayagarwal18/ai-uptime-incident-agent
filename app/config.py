@@ -19,20 +19,21 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=PROJECT_ROOT / ".env", env_file_encoding="utf-8", extra="ignore")
 
     # ---- AI model -------------------------------------------------------------
-    # llm_provider: auto | github_models | openai | openai_compatible | mock
-    #   github_models     -> free GPT-4.1 mini via https://models.github.ai (GitHub token with Models: read)
-    #   openai            -> OpenAI's paid API (OPENAI_API_KEY)
-    #   openai_compatible -> any OpenAI-style server via OPENAI_BASE_URL (Groq, Ollama, Gemini ...)
-    #   auto              -> openai if OPENAI_API_KEY, else github_models if GITHUB_MODELS_TOKEN, else mock
+    # llm_provider: auto | groq | openai | openai_compatible | mock
+    #   groq              -> free OpenAI gpt-oss-120b on Groq (GROQ_API_KEY from console.groq.com)
+    #   openai            -> OpenAI's paid API, GPT-4.1 mini (OPENAI_API_KEY)
+    #   openai_compatible -> any OpenAI-style server via OPENAI_BASE_URL (Ollama, Gemini ...)
+    #   auto              -> openai if OPENAI_API_KEY, else groq if GROQ_API_KEY, else mock
     llm_provider: str = "auto"
     openai_api_key: str = ""
     openai_base_url: str = ""
     openai_model: str = "gpt-4.1-mini"
-    github_models_token: str = ""
+    groq_api_key: str = ""
+    groq_model: str = "openai/gpt-oss-120b"
     force_mock_llm: bool = False
     llm_fallback_to_mock: bool = True       # if the AI service fails (quota, auth), finish with offline analysis
-    llm_max_tool_result_chars: int = 1500   # keeps each request inside GitHub Models' free per-request limits
-    llm_max_output_tokens: int = 1500
+    llm_max_tool_result_chars: int = 0      # 0 = provider default (Groq's free tier needs small requests)
+    llm_max_output_tokens: int = 0          # 0 = provider default
 
     github_token: str = ""
     github_repo: str = ""
@@ -54,26 +55,33 @@ class Settings(BaseSettings):
     def provider(self) -> str:
         """The AI provider actually in use after applying 'auto' and missing-key rules."""
         p = (self.llm_provider or "auto").strip().lower().replace("-", "_")
+        if p == "grok":  # common misspelling of Groq
+            p = "groq"
         if self.force_mock_llm or p == "mock":
             return "mock"
         if p == "auto":
             if self.openai_api_key.strip():
                 p = "openai"
-            elif self.github_models_token.strip():
-                p = "github_models"
+            elif self.groq_api_key.strip():
+                p = "groq"
             else:
                 return "mock"
-        if p not in ("github_models", "openai", "openai_compatible"):
+        if p not in ("groq", "openai", "openai_compatible"):
             return "mock"
         if p != "openai_compatible" and not self.llm_api_key:
             return "mock"
         return p
 
     @property
-    def llm_api_key(self) -> str:
+    def _requested(self) -> str:
         p = (self.llm_provider or "auto").strip().lower().replace("-", "_")
-        if p == "github_models" or (p == "auto" and not self.openai_api_key.strip()):
-            return (self.github_models_token or self.github_token).strip()
+        return "groq" if p == "grok" else p
+
+    @property
+    def llm_api_key(self) -> str:
+        p = self._requested
+        if p == "groq" or (p == "auto" and not self.openai_api_key.strip()):
+            return self.groq_api_key.strip()
         if p == "openai_compatible":
             return self.openai_api_key.strip() or "not-needed"
         return self.openai_api_key.strip()
@@ -82,26 +90,41 @@ class Settings(BaseSettings):
     def llm_base_url(self) -> str | None:
         if self.openai_base_url.strip():
             return self.openai_base_url.strip()
-        if self.provider == "github_models":
-            return "https://models.github.ai/inference"
+        if self.provider == "groq":
+            return "https://api.groq.com/openai/v1"
         return None
 
     @property
     def llm_model_id(self) -> str:
-        """Model name as the provider expects it (GitHub Models uses 'openai/gpt-4.1-mini')."""
-        model = self.openai_model.strip()
-        if self.provider == "github_models" and "/" not in model:
-            return f"openai/{model}"
-        return model
+        """Model name as the provider expects it."""
+        return (self.groq_model if self.provider == "groq" else self.openai_model).strip()
+
+    @property
+    def is_reasoning_model(self) -> bool:
+        return "gpt-oss" in self.llm_model_id
+
+    @property
+    def tool_result_chars(self) -> int:
+        """Max characters of each tool result sent to the model (keeps requests inside rate limits)."""
+        if self.llm_max_tool_result_chars:
+            return self.llm_max_tool_result_chars
+        return 700 if self.provider == "groq" else 1500
+
+    @property
+    def max_output_tokens(self) -> int:
+        if self.llm_max_output_tokens:
+            return self.llm_max_output_tokens
+        return 2048 if self.is_reasoning_model else 1500
 
     @property
     def llm_label(self) -> str:
         """Human-readable description of the AI in use."""
+        short = self.llm_model_id.split("/")[-1]
         return {
             "mock": "Offline demo AI",
-            "github_models": f"{self.openai_model} via GitHub Models (free)",
-            "openai": f"{self.openai_model} via OpenAI",
-            "openai_compatible": f"{self.openai_model} via {self.llm_base_url}",
+            "groq": f"{short} via Groq (free)",
+            "openai": f"{short} via OpenAI",
+            "openai_compatible": f"{short} via {self.llm_base_url}",
         }[self.provider]
 
     @property

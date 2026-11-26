@@ -1,5 +1,5 @@
 """Exercise the real (non-mock) LLM path against a fake OpenAI-compatible server that behaves like
-GitHub Models: checks the URL, token and model id sent, tool calling, structured output and fallback."""
+Groq: checks the URL, API key and model id sent, tool calling, structured output and fallback."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from app.monitor.scheduler import run_cycle
 
 
 def _completion(message: dict) -> dict:
-    return {"id": "chatcmpl-1", "object": "chat.completion", "created": 0, "model": "openai/gpt-4.1-mini",
+    return {"id": "chatcmpl-1", "object": "chat.completion", "created": 0, "model": "openai/gpt-oss-120b",
             "choices": [{"index": 0, "message": message,
                          "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20}}
@@ -28,7 +28,7 @@ def _tool_call(call_id: str, name: str, args: dict) -> dict:
 
 
 class FakeModels(BaseHTTPRequestHandler):
-    """GET /site -> HTTP 500 (the monitored site). POST /inference/chat/completions -> scripted LLM."""
+    """GET /site -> HTTP 500 (the monitored site). POST /openai/v1/chat/completions -> scripted LLM."""
 
     requests: list[dict] = []
     fail_with: int | None = None
@@ -82,9 +82,9 @@ def fake_models(monkeypatch):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{srv.server_port}"
     FakeModels.site_url = f"{base}/site"
-    monkeypatch.setenv("LLM_PROVIDER", "github_models")
-    monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test123")
-    monkeypatch.setenv("OPENAI_BASE_URL", f"{base}/inference")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_test123")
+    monkeypatch.setenv("OPENAI_BASE_URL", f"{base}/openai/v1")
     monkeypatch.setenv("GITHUB_DRY_RUN", "true")
     get_settings.cache_clear()
     yield srv
@@ -97,32 +97,36 @@ def _incident() -> int:
     return run_cycle([site])[0]
 
 
-def test_github_models_settings_resolution():
-    s = Settings(_env_file=None, llm_provider="github_models", github_token="tok", openai_api_key="")
-    assert s.provider == "github_models"
-    assert s.llm_model_id == "openai/gpt-4.1-mini"
-    assert s.llm_base_url == "https://models.github.ai/inference"
-    assert s.llm_api_key == "tok" and "GitHub Models" in s.llm_label
-    assert Settings(_env_file=None, llm_provider="github_models", github_token="", github_models_token="",
-                    openai_api_key="").provider == "mock"
-    assert Settings(_env_file=None, llm_provider="github_models", github_token="a",
-                    github_models_token="b").llm_api_key == "b"  # dedicated token wins
+def test_provider_settings_resolution():
+    s = Settings(_env_file=None, llm_provider="groq", groq_api_key="gsk", openai_api_key="", openai_base_url="")
+    assert s.provider == "groq"
+    assert s.llm_model_id == "openai/gpt-oss-120b"
+    assert s.llm_base_url == "https://api.groq.com/openai/v1"
+    assert s.llm_api_key == "gsk" and s.llm_label == "gpt-oss-120b via Groq (free)"
+    assert s.is_reasoning_model and s.tool_result_chars == 700
+    assert Settings(_env_file=None, llm_provider="grok", groq_api_key="gsk").provider == "groq"  # misspelling
+    assert Settings(_env_file=None, llm_provider="groq", groq_api_key="", openai_api_key="").provider == "mock"
+    auto = Settings(_env_file=None, llm_provider="auto", groq_api_key="gsk", openai_api_key="")
+    assert auto.provider == "groq"
+    paid = Settings(_env_file=None, llm_provider="auto", groq_api_key="gsk", openai_api_key="sk-x", openai_base_url="")
+    assert paid.provider == "openai" and paid.llm_model_id == "gpt-4.1-mini" and paid.llm_base_url is None
 
 
-def test_real_llm_path_with_github_models(fake_models):
+def test_real_llm_path_with_groq(fake_models):
     incident_id = _incident()
     assert runner.start_investigation(incident_id) == "approval"
 
     reqs = FakeModels.requests
-    assert all(r["path"] == "/inference/chat/completions" for r in reqs)
-    assert all(r["auth"] == "Bearer github_pat_test123" for r in reqs)
-    assert all(r["body"]["model"] == "openai/gpt-4.1-mini" for r in reqs)
+    assert all(r["path"] == "/openai/v1/chat/completions" for r in reqs)
+    assert all(r["auth"] == "Bearer gsk_test123" for r in reqs)
+    assert all(r["body"]["model"] == "openai/gpt-oss-120b" for r in reqs)
+    assert all(r["body"].get("reasoning_effort") == "low" for r in reqs)
     assert len(reqs) == 3  # turn 1 (tools), turn 2 (done), analyst
     # the second request carries the tool results back to the model
     assert any(m["role"] == "tool" for m in reqs[1]["body"]["messages"])
 
     inc = db.get_incident(incident_id)
-    assert inc["llm_mode"] == "gpt-4.1-mini via GitHub Models (free)"
+    assert inc["llm_mode"] == "gpt-oss-120b via Groq (free)"
     assert inc["severity"] == "SEV1"
     assert inc["diagnosis"]["probable_causes"][0]["cause"] == "Database connection pool exhausted"
     assert {t["tool_name"] for t in db.list_tool_runs(incident_id)} == {"http_probe", "tcp_port_check"}
@@ -133,8 +137,9 @@ def test_requests_stay_small_for_free_tier(fake_models):
     for r in FakeModels.requests:
         for m in r["body"]["messages"]:
             if m["role"] == "tool":
-                assert len(m["content"]) <= get_settings().llm_max_tool_result_chars + 20
-        assert len(json.dumps(r["body"])) < 24000  # roughly < 6-7k tokens incl. tool schemas
+                assert len(m["content"]) <= get_settings().tool_result_chars + 20
+        # Groq free tier allows 8k tokens/minute: keep each request to roughly 3k tokens
+        assert len(json.dumps(r["body"])) < 12000
 
 
 def test_quota_exhausted_falls_back_to_offline_ai(fake_models):
@@ -152,4 +157,4 @@ def test_bad_token_message(fake_models):
     FakeModels.fail_with = 401
     incident_id = _incident()
     runner.start_investigation(incident_id)
-    assert "Models: read" in db.get_incident(incident_id)["llm_mode"]
+    assert "GROQ_API_KEY" in db.get_incident(incident_id)["llm_mode"]

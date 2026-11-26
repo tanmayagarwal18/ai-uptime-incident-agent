@@ -5,7 +5,7 @@
 ![LangGraph](https://img.shields.io/badge/agent-LangGraph-purple)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-An AI-powered application that monitors websites and APIs, detects failures and then **investigates them on its own**. An LLM agent chooses and runs diagnostic tools, finds the likely root cause, classifies severity, writes an incident report, opens a **GitHub issue** after human approval, and **verifies recovery**.
+An AI-powered application that monitors websites and APIs, detects failures and then **investigates them on its own**. An LLM agent (GPT-4.1 mini, or free gpt-oss-120b on Groq) chooses and runs diagnostic tools, finds the likely root cause, classifies severity, writes an incident report, opens a **GitHub issue** after human approval, and **verifies recovery**.
 
 > Conventional monitors stop at the alert. This agent continues: it investigates the failure, explains the cause, files the ticket and confirms the fix.
 
@@ -82,7 +82,7 @@ More detail, including the lifecycle state machine and data model, is in [docs/a
 | Technology | Purpose |
 |---|---|
 | Python 3.11+ | Core application logic and monitoring |
-| OpenAI GPT-4.1 mini (free via GitHub Models) | AI reasoning, tool selection, incident analysis |
+| OpenAI GPT-4.1 mini / gpt-oss-120b on Groq (free) | AI reasoning, tool selection, incident analysis |
 | LangGraph | Agent workflow orchestration, state, interrupts, checkpoints |
 | Requests | HTTP health checks and diagnostics |
 | dnspython | DNS resolution diagnostics |
@@ -107,37 +107,39 @@ Edit `.env`. Everything is optional: with no token the project uses the offline 
 
 | Variable | Default | Notes |
 |---|---|---|
-| `LLM_PROVIDER` | `github_models` | `github_models` (free GPT-4.1 mini), `openai`, `openai_compatible` or `auto` |
-| `OPENAI_MODEL` | `gpt-4.1-mini` | Model name |
-| `GITHUB_TOKEN` | *(empty)* | Used for both free GPT-4.1 mini and incident tickets (see below) |
+| `LLM_PROVIDER` | `groq` | `groq` (free gpt-oss-120b), `openai` (paid GPT-4.1 mini), `openai_compatible` or `auto` |
+| `GROQ_API_KEY` | *(empty)* | Free key from [console.groq.com/keys](https://console.groq.com/keys) |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | *(empty)* / `gpt-4.1-mini` | Only for the paid OpenAI API |
+| `GITHUB_TOKEN` | *(empty)* | Creates incident tickets (Issues: read and write) |
 | `GITHUB_REPO` | `owner/repo` | Repository where incident issues are created |
-| `LLM_FALLBACK_TO_MOCK` | `true` | If the AI service fails (free limit, bad token), finish with the offline AI |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | *(empty)* | Only for the paid OpenAI API or another OpenAI-compatible server |
+| `LLM_FALLBACK_TO_MOCK` | `true` | If the AI service fails (free limit, bad key), finish with the offline AI |
 | `REQUIRE_HUMAN_APPROVAL` | `true` | `false` lets the agent file tickets automatically |
 | `AUTO_VERIFY_RECOVERY` | `true` | Monitor resolves ticketed incidents once the site is healthy |
 | `CHECK_INTERVAL_SECONDS` | `30` | Monitoring interval |
 
 Monitored targets live in [`config/sites.yaml`](config/sites.yaml).
 
-### Free GPT-4.1 mini + GitHub tickets with one token
-The agent uses **GPT-4.1 mini through [GitHub Models](https://github.com/marketplace/models)**, which every GitHub account can use for free within rate limits. One fine-grained token covers both the AI and the tickets:
+### Choosing the AI model
+The agent works with any model that supports tool calling through an OpenAI-style API.
 
+| Option | Cost | Model | Setup |
+|---|---|---|---|
+| **Groq** (default) | Free, no card | `openai/gpt-oss-120b`, OpenAI's open-weight model | `LLM_PROVIDER=groq`, `GROQ_API_KEY=gsk_...` |
+| **OpenAI** | Paid (~$0.005 per incident) | `gpt-4.1-mini` | `LLM_PROVIDER=openai`, `OPENAI_API_KEY=sk-...` |
+| **Other** | Varies | Ollama, Gemini, ... | `LLM_PROVIDER=openai_compatible`, `OPENAI_BASE_URL`, `OPENAI_MODEL` |
+| **None** | Free | Offline demo AI (rule-based) | Leave the keys empty |
+
+**Free setup with Groq:** sign up at [console.groq.com](https://console.groq.com), create a key under **API Keys**, put it in `.env` as `GROQ_API_KEY`, then run `python scripts/check_ai.py`.
+
+Groq's free plan is rate-limited (about 8,000 tokens per minute and 200,000 per day for gpt-oss-120b). The agent keeps each request small, waits automatically when the per-minute limit is hit, and an incident takes roughly 30–60 seconds. If the limit is exhausted, the offline demo AI finishes the incident and the dashboard says so.
+
+> GitHub Models, which used to offer GPT-4.1 mini for free, was retired on 30 July 2026, so it is no longer an option.
+
+### GitHub token (incident tickets)
 1. GitHub → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**
-2. **Repository access:** Only select repositories → this repo
-3. **Permissions:**
-   - Repository permissions → **Issues: Read and write** (incident tickets)
-   - Account permissions → **Models: Read-only** (free GPT-4.1 mini)
-4. In `.env` set:
-   ```
-   LLM_PROVIDER=github_models
-   GITHUB_TOKEN=github_pat_...
-   GITHUB_REPO=<your-username>/ai-uptime-incident-agent
-   ```
-5. Check it works: `python scripts/check_ai.py`
-
-The free tier is rate-limited (roughly 15 requests/minute and 150/day for GPT-4.1 mini). One incident uses 3–6 AI requests. If the limit is reached, the incident is finished by the offline demo AI and the dashboard says so.
-
-**Other options:** `LLM_PROVIDER=openai` with `OPENAI_API_KEY` (paid OpenAI API), or `LLM_PROVIDER=openai_compatible` with `OPENAI_BASE_URL` and `OPENAI_MODEL` for Groq, Google Gemini or a local Ollama model.
+2. Repository access: **Only select repositories** → this repo
+3. Permissions → Repository → **Issues: Read and write**
+4. Put it in `.env` as `GITHUB_TOKEN`, and set `GITHUB_REPO=<your-username>/ai-uptime-incident-agent`
 
 ## ▶️ Running
 

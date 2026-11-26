@@ -13,7 +13,7 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv("CHECKPOINT_DB_PATH", str(tmp_path / "checkpoints.db"))
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("LLM_PROVIDER", "auto")
-    monkeypatch.setenv("GITHUB_MODELS_TOKEN", "")
+    monkeypatch.setenv("GROQ_API_KEY", "")
     monkeypatch.setenv("OPENAI_BASE_URL", "")
     monkeypatch.setenv("GITHUB_TOKEN", "")
     monkeypatch.setenv("GITHUB_REPO", "octo/test-repo")

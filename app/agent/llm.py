@@ -1,4 +1,4 @@
-"""LLM factories. GPT-4.1 mini via GitHub Models (free) or OpenAI, any OpenAI-compatible server,
+"""LLM factories: free gpt-oss-120b on Groq, GPT-4.1 mini on OpenAI, any OpenAI-compatible server,
 or the offline demo AI. Also turns AI-service errors into plain-language reasons."""
 
 from __future__ import annotations
@@ -27,9 +27,11 @@ def _chat_model() -> Any:
         "api_key": s.llm_api_key,
         "temperature": 0,
         "timeout": 60,
-        "max_retries": 2,
-        "max_tokens": s.llm_max_output_tokens,
+        "max_retries": 6 if s.provider == "groq" else 2,  # Groq free tier: wait out per-minute limits
+        "max_tokens": s.max_output_tokens,
     }
+    if s.is_reasoning_model:
+        kwargs["reasoning_effort"] = "low"  # fewer hidden reasoning tokens -> faster, stays under limits
     if s.llm_base_url:
         kwargs["base_url"] = s.llm_base_url
     return ChatOpenAI(**kwargs)
@@ -76,18 +78,21 @@ def describe_llm_error(exc: Exception) -> str:
     status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
     text = str(exc).lower()
     provider = get_settings().provider
-    if status == 401 or "unauthorized" in text or "bad credentials" in text:
-        if provider == "github_models":
-            return "the GitHub token was rejected - check it is valid and has the 'Models: read' permission"
-        return "the API key was rejected - check it in .env"
+    if isinstance(exc, ValueError) and "got str" in text:
+        return "the AI service returned an unexpected non-JSON reply - check OPENAI_BASE_URL"
+    if status == 401 or "unauthorized" in text or "invalid api key" in text:
+        key = "GROQ_API_KEY" if provider == "groq" else "OPENAI_API_KEY"
+        return f"the API key was rejected - check {key} in .env"
+    if status == 413 or "request too large" in text:
+        return "the request was larger than the free per-minute token limit"
     if status == 403:
         return "access denied - the token lacks permission for this model"
     if status == 429 or "rate limit" in text or "ratelimit" in text:
         return "the free usage limit was reached - wait a while or try again tomorrow"
-    if status == 413 or "too large" in text or "context length" in text or "tokens_limit" in text:
+    if "context length" in text or "tokens_limit" in text:
         return "the request was too large for the model's limit"
     if status == 404 or "unknown model" in text or "model_not_found" in text:
-        return f"the model '{get_settings().llm_model_id}' was not found - check OPENAI_MODEL"
+        return f"the model '{get_settings().llm_model_id}' was not found - check the model name in .env"
     if "connect" in text or "timed out" in text or "timeout" in text:
         return "the AI service could not be reached - check the internet connection"
     return f"{type(exc).__name__}: {str(exc)[:160]}"
