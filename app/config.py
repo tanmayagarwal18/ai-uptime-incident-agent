@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.8-flash"
+    gemini_fallback_model: str = "gemini-3.5-flash-lite"  # used automatically when the main model is busy
     gemini_base_url: str = ""               # only for tests / proxies
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-120b"

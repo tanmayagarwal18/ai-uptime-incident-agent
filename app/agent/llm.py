@@ -23,11 +23,7 @@ def _chat_model() -> Any:
     if s.provider == "gemini":
         # Google's own integration: it returns Gemini 3 "thought signatures" with tool results,
         # which the OpenAI-compatible route drops (causing 400 errors on multi-step tool use).
-        from langchain_google_genai import ChatGoogleGenerativeAI
-
-        extra = {"base_url": s.gemini_base_url} if s.gemini_base_url.strip() else {}
-        return ChatGoogleGenerativeAI(model=s.llm_model_id, api_key=s.llm_api_key, reasoning_effort="low",
-                                      max_tokens=s.max_output_tokens, retries=4, request_timeout=90, **extra)
+        return _gemini(s.llm_model_id)
 
     from langchain_openai import ChatOpenAI
 
@@ -46,6 +42,24 @@ def _chat_model() -> Any:
     return ChatOpenAI(**kwargs)
 
 
+def _gemini(model: str) -> Any:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+
+    s = get_settings()
+    extra = {"base_url": s.gemini_base_url} if s.gemini_base_url.strip() else {}
+    return ChatGoogleGenerativeAI(model=model, api_key=s.llm_api_key, reasoning_effort="low",
+                                  max_tokens=s.max_output_tokens, retries=2, request_timeout=90, **extra)
+
+
+def _gemini_backup() -> Any | None:
+    """Second Gemini model to try when the main one is overloaded (HTTP 503) or rate limited."""
+    s = get_settings()
+    backup = s.gemini_fallback_model.strip()
+    if s.provider != "gemini" or not backup or backup == s.llm_model_id:
+        return None
+    return _gemini(backup)
+
+
 def _use_mock(state: dict[str, Any] | None) -> bool:
     global _warned
     if get_settings().use_mock_llm:
@@ -56,11 +70,19 @@ def _use_mock(state: dict[str, Any] | None) -> bool:
     return bool(state and state.get("llm_fallback"))
 
 
+def get_chat_llm() -> Any:
+    """Plain chat model (no tools), with the Gemini backup model when configured."""
+    backup = _gemini_backup()
+    return _chat_model().with_fallbacks([backup]) if backup else _chat_model()
+
+
 def get_tool_llm(state: dict[str, Any]) -> Any:
     """LLM bound to the diagnostic tools; it decides which tools to call."""
     if _use_mock(state):
         return get_fallback_tool_llm(state)
-    return _chat_model().bind_tools(ALL_TOOLS)
+    llm = _chat_model().bind_tools(ALL_TOOLS)
+    backup = _gemini_backup()
+    return llm.with_fallbacks([backup.bind_tools(ALL_TOOLS)]) if backup else llm
 
 
 def get_analyst_llm(state: dict[str, Any] | None = None, evidence: list[dict[str, Any]] | None = None) -> Any:
@@ -68,7 +90,9 @@ def get_analyst_llm(state: dict[str, Any] | None = None, evidence: list[dict[str
     if _use_mock(state):
         return get_fallback_analyst_llm(state or {}, evidence or [])
     method = "json_schema" if get_settings().provider == "gemini" else "function_calling"
-    return _chat_model().with_structured_output(Diagnosis, method=method)
+    llm = _chat_model().with_structured_output(Diagnosis, method=method)
+    backup = _gemini_backup()
+    return llm.with_fallbacks([backup.with_structured_output(Diagnosis, method=method)]) if backup else llm
 
 
 def get_fallback_tool_llm(state: dict[str, Any]) -> Any:
@@ -106,6 +130,8 @@ def describe_llm_error(exc: Exception) -> str:
         return f"the API key was rejected - check {key} in .env"
     if status == 413 or "request too large" in text:
         return "the request was larger than the free per-minute token limit"
+    if status == 503 or "high demand" in text or "unavailable" in text or "overloaded" in text:
+        return "the AI model is busy (high demand) - try again in a few minutes"
     if status == 403:
         return "access denied - the token lacks permission for this model"
     if status == 429 or "rate limit" in text or "ratelimit" in text or "resource_exhausted" in text:

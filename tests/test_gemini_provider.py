@@ -26,6 +26,7 @@ DIAGNOSIS = {
 class FakeGemini(BaseHTTPRequestHandler):
     requests: list[dict] = []
     fail_with: int | None = None
+    busy_models: set[str] = set()
     site_url = ""
 
     def do_GET(self):  # noqa: N802 - the monitored site
@@ -44,6 +45,10 @@ class FakeGemini(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         type(self).requests.append({"path": self.path, "key": self.headers.get("x-goog-api-key"), "body": body})
+        if any(f"/models/{m}:" in self.path for m in type(self).busy_models):
+            self._send(503, {"error": {"code": 503, "message": "This model is currently experiencing high demand.",
+                                       "status": "UNAVAILABLE"}})
+            return
         if type(self).fail_with:
             self._send(type(self).fail_with, {"error": {"code": type(self).fail_with,
                                                         "message": "Resource has been exhausted (e.g. check quota).",
@@ -72,7 +77,7 @@ class FakeGemini(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def fake_gemini(monkeypatch):
-    FakeGemini.requests, FakeGemini.fail_with = [], None
+    FakeGemini.requests, FakeGemini.fail_with, FakeGemini.busy_models = [], None, set()
     srv = HTTPServer(("127.0.0.1", 0), FakeGemini)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{srv.server_port}"
@@ -131,3 +136,13 @@ def test_gemini_quota_falls_back(fake_gemini, monkeypatch):
     assert runner.start_investigation(incident_id) == "approval"
     inc = db.get_incident(incident_id)
     assert inc["llm_mode"].startswith("Offline demo AI (fallback: the free usage limit was reached")
+
+
+def test_busy_main_model_switches_to_backup(fake_gemini):
+    FakeGemini.busy_models = {"gemini-3.8-flash"}
+    incident_id = _incident()
+    assert runner.start_investigation(incident_id) == "approval"
+    inc = db.get_incident(incident_id)
+    assert not inc["llm_mode"].startswith("Offline")  # real AI finished the job
+    assert inc["diagnosis"]["probable_causes"][0]["cause"] == "Database connection pool exhausted"
+    assert any("/models/gemini-3.5-flash-lite:" in r["path"] for r in FakeGemini.requests)

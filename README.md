@@ -133,6 +133,8 @@ The agent works with any model that supports tool calling through an OpenAI-styl
 
 **Free setup with Gemini:** sign in at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) with a Google account, click **Create API key**, put it in `.env` as `GEMINI_API_KEY`, then run `python scripts/check_ai.py`.
 
+If the main model is busy (Google sometimes answers "high demand"), the agent automatically switches to `GEMINI_FALLBACK_MODEL` (default `gemini-3.5-flash-lite`).
+
 Gemini is connected through Google's own LangChain integration (`langchain-google-genai`), which correctly returns Gemini 3 "thought signatures" during multi-step tool calling. The free tier is rate-limited (your limits are shown in AI Studio) and Google may use free-tier prompts to improve its products, so don't send sensitive data. If the limit is reached, the offline demo AI finishes the incident and the dashboard says so.
 
 Groq is an alternative free option; its free plan allows about 8,000 tokens per minute, so an incident takes roughly 30–60 seconds.
