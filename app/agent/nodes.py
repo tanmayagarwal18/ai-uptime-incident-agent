@@ -111,3 +111,66 @@ def tools_node(state: AgentState) -> dict[str, Any]:
             content = content[:4000] + "...(truncated)"
         messages.append(ToolMessage(content=content, tool_call_id=call["id"], name=call["name"]))
     return {"messages": messages}
+
+
+# ------------------------------------------------------------------ analyze (structured output)
+def collect_evidence(state: AgentState) -> list[dict[str, Any]]:
+    """Pair each ToolMessage with the tool call that produced it."""
+    calls: dict[str, dict[str, Any]] = {}
+    evidence: list[dict[str, Any]] = []
+    for m in state.get("messages", []):
+        if isinstance(m, AIMessage):
+            for tc in m.tool_calls or []:
+                calls[tc["id"]] = tc
+        elif isinstance(m, ToolMessage):
+            tc = calls.get(m.tool_call_id, {})
+            try:
+                result = json.loads(m.content)
+            except (TypeError, ValueError):
+                result = m.content
+            evidence.append({"tool": m.name or tc.get("name"), "args": tc.get("args", {}), "result": result})
+    return evidence
+
+
+def _final_findings(state: AgentState) -> str:
+    for m in reversed(state.get("messages", [])):
+        if isinstance(m, AIMessage) and not m.tool_calls and m.content:
+            return str(m.content)
+    return ""
+
+
+def analyze_node(state: AgentState) -> dict[str, Any]:
+    """Turn the gathered evidence into a structured Diagnosis (causes, severity, actions)."""
+    from app.agent.llm import get_analyst_llm
+    from app.agent.prompts import ANALYST_SYSTEM
+
+    evidence = collect_evidence(state)
+    evidence_text = "\n".join(
+        f"[{i}] {e['tool']}({json.dumps(e['args'])}) -> {json.dumps(e['result'], default=str)[:1500]}"
+        for i, e in enumerate(evidence, 1)
+    )
+    prompt = (f"{state['triage_summary']}\n\nDIAGNOSTIC EVIDENCE:\n{evidence_text or '(no tools were run)'}\n\n"
+              f"INVESTIGATOR FINDINGS:\n{_final_findings(state) or '(none)'}\n\nProduce the structured diagnosis.")
+    diagnosis = get_analyst_llm().invoke([SystemMessage(content=ANALYST_SYSTEM), HumanMessage(content=prompt)])
+    diag = diagnosis.model_dump()
+    diag["probable_causes"] = sorted(diag["probable_causes"], key=lambda c: c["confidence"], reverse=True)
+
+    top = diag["probable_causes"][0]["cause"] if diag["probable_causes"] else "unknown"
+    db.update_incident(state["incident_id"], severity=diag["severity"], diagnosis_json=diag)
+    db.add_event(state["incident_id"], "DIAGNOSED", f"Severity {diag['severity']} - most likely cause: {top}")
+    return {"diagnosis": diag}
+
+
+# ------------------------------------------------------------------ report
+def report_node(state: AgentState) -> dict[str, Any]:
+    """Render and store the Markdown incident report."""
+    from app.reporting.report import render_report
+
+    incident_id = state["incident_id"]
+    db.add_event(incident_id, "REPORT_GENERATED", "Structured incident report generated")
+    report = render_report(
+        db.get_incident(incident_id), state["diagnosis"], db.list_tool_runs(incident_id),
+        db.list_events(incident_id), state["site"],
+    )
+    db.update_incident(incident_id, report_md=report)
+    return {"report_md": report}
