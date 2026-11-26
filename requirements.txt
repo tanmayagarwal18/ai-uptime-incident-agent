@@ -14,7 +14,7 @@ langgraph>=0.2.60
 langgraph-checkpoint-sqlite>=2.0
 
 # Dashboard & API
-streamlit>=1.37
+streamlit>=1.45
 plotly>=5.22
 pandas>=2.2
 fastapi>=0.115
