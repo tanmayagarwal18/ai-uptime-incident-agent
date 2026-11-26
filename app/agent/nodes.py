@@ -284,13 +284,13 @@ def verify_recovery_node(state: AgentState) -> dict[str, Any]:
         db.update_incident(incident_id, status="RESOLVED", resolved_at=db.utcnow())
         db.add_event(incident_id, "RESOLVED",
                      f"Recovery verified: HTTP {result.status_code} in {result.response_time_ms:.0f} ms", verification)
-        comment = (f"✅ **Recovery verified** by the AI incident agent at {result.timestamp} UTC.\n\n"
+        comment = (f"**Recovery verified** by the AI incident agent at {result.timestamp} UTC.\n\n"
                    f"- HTTP status: `{result.status_code}`\n- Response time: `{result.response_time_ms:.0f} ms`\n\n"
                    "Closing this incident.")
     else:
         db.add_event(incident_id, "STILL_FAILING",
                      f"Recovery check failed: {result.status} {result.status_code or result.error_type}", verification)
-        comment = (f"⚠️ Recovery check at {result.timestamp} UTC: still **{result.status}** "
+        comment = (f"Recovery check at {result.timestamp} UTC: still **{result.status}** "
                    f"(`{result.status_code or result.error_type}`). Incident remains open.")
     try:
         client.add_comment(issue.get("number"), comment)

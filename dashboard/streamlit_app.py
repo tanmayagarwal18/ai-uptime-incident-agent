@@ -19,17 +19,22 @@ import streamlit as st  # noqa: E402
 from app import db, services  # noqa: E402
 from app.config import get_settings, load_sites, setup_logging  # noqa: E402
 
-st.set_page_config(page_title="AI Uptime Incident Agent", page_icon="🛰️", layout="wide")
+st.set_page_config(page_title="AI Uptime Incident Agent", layout="wide")
 setup_logging()
 
 # Reference palette (dataviz skill): one series hue + reserved status colours, always paired with a text label.
 SERIES = "#257de0"
 MUTED = "#8a8a8a"
 STATUS_COLORS = {"UP": "#0aac23", "DEGRADED": "#fbb315", "DOWN": "#dc3c3d", "UNKNOWN": MUTED}
-STATUS_ICONS = {"UP": "🟢", "DEGRADED": "🟡", "DOWN": "🔴", "UNKNOWN": "⚪"}
-SEV_ICONS = {"SEV1": "🔴", "SEV2": "🟠", "SEV3": "🟡", "SEV4": "🟢"}
-INCIDENT_ICONS = {"OPEN": "🆕", "INVESTIGATING": "🔎", "AWAITING_APPROVAL": "⏳", "TICKET_CREATED": "🎫",
-                  "RESOLVED": "✅", "REJECTED": "🚫"}
+# Colour tones for Streamlit badges (meaning is always carried by the text label too)
+STATUS_TONE = {"UP": "green", "DEGRADED": "orange", "DOWN": "red", "UNKNOWN": "gray"}
+SEV_TONE = {"SEV1": "red", "SEV2": "orange", "SEV3": "blue", "SEV4": "green"}
+INCIDENT_TONE = {"OPEN": "red", "INVESTIGATING": "blue", "AWAITING_APPROVAL": "orange", "TICKET_CREATED": "violet",
+                 "RESOLVED": "green", "REJECTED": "gray"}
+# Text colours for table cells
+CELL_COLORS = {"UP": "#0aac23", "DEGRADED": "#c98a00", "DOWN": "#dc3c3d", "SEV1": "#dc3c3d", "SEV2": "#e0702b",
+               "SEV3": "#257de0", "SEV4": "#0aac23", "OPEN": "#dc3c3d", "INVESTIGATING": "#257de0",
+               "AWAITING_APPROVAL": "#c98a00", "TICKET_CREATED": "#6a4ce2", "RESOLVED": "#0aac23", "REJECTED": MUTED}
 
 PAGES = ["Overview", "Site detail", "Incidents"]
 
@@ -45,7 +50,19 @@ settings = get_settings()
 
 
 def badge(status: str | None) -> str:
-    return f"{STATUS_ICONS.get(status or 'UNKNOWN', '⚪')} {status or 'UNKNOWN'}"
+    """Plain-text status (used where markdown is not rendered, e.g. metrics)."""
+    return status or "UNKNOWN"
+
+
+def md_badge(text: str | None, tones: dict[str, str]) -> str:
+    """Coloured Streamlit markdown badge, e.g. :green-badge[UP]."""
+    text = text or "UNKNOWN"
+    return f":{tones.get(text, 'gray')}-badge[{text.replace('_', ' ')}]"
+
+
+def color_cells(value) -> str:
+    color = CELL_COLORS.get(str(value).strip())
+    return f"color: {color}; font-weight: 600" if color else ""
 
 
 def fmt_ms(v) -> str:
@@ -60,7 +77,7 @@ def go_to_incident(incident_id: int) -> None:
 # ====================================================================== sidebar
 def sidebar() -> str:
     with st.sidebar:
-        st.title("🛰️ Uptime Agent")
+        st.title("Uptime Agent")
         st.caption("AI website monitoring & incident response")
         if "_goto_incident" in st.session_state:
             st.session_state["page"] = "Incidents"
@@ -79,7 +96,7 @@ def sidebar() -> str:
 def demo_control() -> None:
     """Sidebar panel that drives the flaky demo server so incidents can be shown live."""
     st.divider()
-    st.markdown("**🎬 Demo control**")
+    st.markdown("**Demo control**")
     current = services.demo_mode()
     if current is None:
         st.caption(f"Demo server not reachable at `{settings.demo_server_url}`. Start it with `make demo-server`.")
@@ -90,7 +107,7 @@ def demo_control() -> None:
                         help="\n".join(f"- {k}: {v}" for k, v in current["available_modes"].items()))
     st.caption(current["available_modes"][mode])
     c1, c2 = st.columns(2)
-    if c1.button("💥 Simulate incident", type="primary", key="simulate", disabled=mode == "healthy"):
+    if c1.button("Simulate incident", type="primary", key="simulate", disabled=mode == "healthy"):
         with st.spinner(f"Switching to '{mode}', running checks, agent investigating..."):
             try:
                 incident_id = services.simulate_incident(mode)
@@ -102,7 +119,7 @@ def demo_control() -> None:
             st.rerun()
         else:
             st.warning("No incident opened (failure threshold not reached yet) - try Run checks now.")
-    if c2.button("🩹 Fix (healthy)", key="heal"):
+    if c2.button("Fix (healthy)", key="heal"):
         services.set_demo_mode("healthy")
         st.toast("Demo server is healthy again - click Verify recovery on the incident.")
         st.rerun()
@@ -111,7 +128,7 @@ def demo_control() -> None:
 
 # ====================================================================== overview
 def run_checks_button(key: str) -> None:
-    if st.button("▶ Run checks now", key=key, type="primary"):
+    if st.button("Run checks now", key=key, type="primary"):
         with st.spinner("Checking all sites (the agent investigates any new incident)..."):
             new = services.run_checks_now()
         if new:
@@ -153,7 +170,7 @@ def overview_page() -> None:
         "Open incident": stats["open_incident"].map(lambda v: "-" if pd.isna(v) else f"#{int(v)}"),
         "Last checked (UTC)": stats["last_checked"].fillna("-"),
     })
-    st.dataframe(table, hide_index=True, width="stretch")
+    st.dataframe(table.style.map(color_cells, subset=["Status"]), hide_index=True, width="stretch")
 
     st.subheader("Latest incidents")
     if not incidents:
@@ -161,8 +178,8 @@ def overview_page() -> None:
     for inc in incidents[:5]:
         cols = st.columns([1, 2, 5, 2, 1])
         cols[0].markdown(f"**#{inc['id']}**")
-        cols[1].markdown(f"{INCIDENT_ICONS.get(inc['status'], '')} {inc['status']}")
-        cols[2].markdown(f"{SEV_ICONS.get(inc['severity'] or '', '')} {inc['severity'] or ''} {inc['summary'][:90]}")
+        cols[1].markdown(md_badge(inc["status"], INCIDENT_TONE))
+        cols[2].markdown((md_badge(inc["severity"], SEV_TONE) + " " if inc["severity"] else "") + inc["summary"][:90])
         cols[3].caption(inc["opened_at"])
         cols[4].button("Open", key=f"open_{inc['id']}", on_click=go_to_incident, args=(inc["id"],))
 
@@ -244,22 +261,27 @@ def incidents_page() -> None:
     st.header("Incidents")
     all_incidents = db.list_incidents(limit=500)
     if not all_incidents:
-        st.info("No incidents yet. Use **Demo control → Simulate incident** in the sidebar to trigger one.")
+        st.info("No incidents yet. Use **Demo control > Simulate incident** in the sidebar to trigger one.")
         return
 
     f1, f2, f3 = st.columns(3)
-    status_f = f1.multiselect("Status", list(INCIDENT_ICONS), placeholder="All statuses")
+    status_f = f1.multiselect("Status", list(INCIDENT_TONE), placeholder="All statuses")
     site_f = f2.multiselect("Site", sorted({i["site"] for i in all_incidents}), placeholder="All sites")
-    sev_f = f3.multiselect("Severity", list(SEV_ICONS), placeholder="All severities")
+    sev_f = f3.multiselect("Severity", list(SEV_TONE), placeholder="All severities")
     incidents = [i for i in all_incidents
                  if (not status_f or i["status"] in status_f) and (not site_f or i["site"] in site_f)
                  and (not sev_f or i["severity"] in sev_f)]
-    st.dataframe(pd.DataFrame([{
-        "ID": f"#{i['id']}", "Status": f"{INCIDENT_ICONS.get(i['status'], '')} {i['status']}",
-        "Severity": f"{SEV_ICONS.get(i['severity'] or '', '')} {i['severity'] or '-'}", "Site": i["site"],
+    incident_table = pd.DataFrame([{
+        "ID": f"#{i['id']}", "Status": i["status"],
+        "Severity": i["severity"] or "-", "Site": i["site"],
         "Summary": i["summary"], "Opened (UTC)": i["opened_at"], "Resolved (UTC)": i["resolved_at"] or "-",
         "GitHub": i["github_issue_url"] or ("dry-run" if i["github_payload_json"] else "-"),
-    } for i in incidents]), hide_index=True, width="stretch", height=min(38 * (len(incidents) + 1), 300))
+    } for i in incidents])
+    if incidents:
+        st.dataframe(incident_table.style.map(color_cells, subset=["Status", "Severity"]), hide_index=True,
+                     width="stretch", height=min(38 * (len(incidents) + 1), 300))
+    else:
+        st.caption("No incidents match the selected filters.")
 
     ids = [i["id"] for i in incidents] or [all_incidents[0]["id"]]
     if st.session_state.get("selected_incident") not in ids:
@@ -274,9 +296,9 @@ def incidents_page() -> None:
     head, actions = st.columns([3, 2])
     with head:
         st.subheader(f"#{inc['id']} - {inc['site']}")
-        st.markdown(f"**{SEV_ICONS.get(inc['severity'] or '', '')} {inc['severity'] or 'Unclassified'}** · "
-                    f"{INCIDENT_ICONS.get(inc['status'], '')} **{inc['status']}** · opened {inc['opened_at']} UTC"
-                    + (f" · resolved {inc['resolved_at']} UTC" if inc["resolved_at"] else ""))
+        st.markdown(f"{md_badge(inc['severity'] or 'Unclassified', SEV_TONE)} "
+                    f"{md_badge(inc['status'], INCIDENT_TONE)} opened {inc['opened_at']} UTC"
+                    + (f", resolved {inc['resolved_at']} UTC" if inc["resolved_at"] else ""))
         st.write(inc["summary"])
         if diag.get("impact_summary"):
             st.markdown(f"**Impact:** {diag['impact_summary']}")
@@ -286,36 +308,36 @@ def incidents_page() -> None:
     with actions:
         st.markdown("**Actions**")
         if pending == "approval":
-            st.warning("⏳ The agent is waiting for approval to create a GitHub issue.")
+            st.warning("The agent is waiting for approval to create a GitHub issue.")
             b1, b2 = st.columns(2)
-            if b1.button("✅ Approve & create ticket", type="primary", key="approve"):
+            if b1.button("Approve & create ticket", type="primary", key="approve"):
                 with st.spinner("Creating GitHub issue..."):
                     runner.submit_approval(incident_id, True, reviewer="dashboard")
                 st.rerun()
-            if b2.button("🚫 Reject", key="reject"):
+            if b2.button("Reject", key="reject"):
                 runner.submit_approval(incident_id, False, reviewer="dashboard")
                 st.rerun()
         if inc["github_issue_url"]:
-            st.link_button(f"🎫 Open GitHub issue #{inc['github_issue_number']}", inc["github_issue_url"])
+            st.link_button(f"Open GitHub issue #{inc['github_issue_number']}", inc["github_issue_url"])
         elif inc["github_payload_json"]:
-            st.info("🎫 GitHub dry-run: issue payload recorded (see the GitHub tab). Set GITHUB_TOKEN to create real issues.")
+            st.info("GitHub dry-run: issue payload recorded (see the GitHub tab). Set GITHUB_TOKEN to create real issues.")
         if inc["status"] not in ("RESOLVED", "REJECTED"):
-            if st.button("🔁 Verify recovery", key="verify"):
+            if st.button("Verify recovery", key="verify"):
                 with st.spinner("Re-checking the site..."):
                     result = runner.verify_recovery(incident_id)
                 (st.success if result["recovered"] else st.error)(result["message"])
                 if inc["status"] == "TICKET_CREATED":
                     st.rerun()
         if inc["status"] in ("OPEN",) and pending is None:
-            if st.button("🤖 Run AI investigation", key="investigate"):
+            if st.button("Run AI investigation", key="investigate"):
                 with st.spinner("Agent investigating..."):
                     services.handle_new_incident(incident_id)
                 st.rerun()
         if inc["status"] == "RESOLVED":
-            st.success("✅ Recovery verified - incident resolved.")
+            st.success("Recovery verified - incident resolved.")
 
     trace_tab, rca_tab, report_tab, gh_tab, timeline_tab = st.tabs(
-        ["🔎 Agent investigation trace", "🧠 Root cause & actions", "📄 Incident report", "🎫 GitHub", "🕒 Timeline"])
+        ["Agent investigation trace", "Root cause & actions", "Incident report", "GitHub", "Timeline"])
 
     with trace_tab:
         runs = db.list_tool_runs(incident_id)
@@ -328,10 +350,10 @@ def incidents_page() -> None:
             if reasoning and reasoning.get("data_json"):
                 why = json.loads(reasoning["data_json"]).get("reasoning")
                 if why:
-                    st.caption(f"💭 {why}")
+                    st.caption(f"Reasoning: {why}")
             for r in [r for r in runs if r["iteration"] == turn]:
                 ok = (r["result"] or {}).get("ok", True) if isinstance(r["result"], dict) else True
-                with st.expander(f"{'✅' if ok else '⚠️'} `{r['tool_name']}` - "
+                with st.expander(f"{':green[OK]' if ok else ':orange[Issue]'} `{r['tool_name']}` - "
                                  f"{summarize_tool_result(r['tool_name'], r['result'])}  ({r['duration_ms']:.0f} ms)"):
                     st.markdown("**Arguments**")
                     st.json(r["args"])
@@ -339,13 +361,13 @@ def incidents_page() -> None:
                     st.json(r["result"])
         done = next((d for d in decisions if d["event_type"] == "INVESTIGATION_COMPLETE"), None)
         if done and done.get("data_json"):
-            st.success(f"🏁 {json.loads(done['data_json']).get('findings', '')}")
+            st.success(f"Findings: {json.loads(done['data_json']).get('findings', '')}")
 
     with rca_tab:
         if not diag:
             st.caption("No diagnosis yet.")
         else:
-            st.markdown(f"**Severity:** {SEV_ICONS.get(diag['severity'], '')} {diag['severity']} - {diag.get('severity_reason', '')}")
+            st.markdown(f"**Severity:** {md_badge(diag['severity'], SEV_TONE)} - {diag.get('severity_reason', '')}")
             st.markdown(f"**Overall confidence:** {round(diag.get('confidence', 0) * 100)}%")
             st.markdown("#### Probable causes")
             for i, c in enumerate(diag.get("probable_causes", []), 1):
@@ -358,7 +380,7 @@ def incidents_page() -> None:
 
     with report_tab:
         if inc["report_md"]:
-            st.download_button("⬇ Download report (.md)", inc["report_md"], file_name=f"incident-{incident_id}.md")
+            st.download_button("Download report (.md)", inc["report_md"], file_name=f"incident-{incident_id}.md")
             with st.container(border=True):
                 st.markdown(inc["report_md"])
         else:

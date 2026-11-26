@@ -141,11 +141,11 @@ Dashboard: http://localhost:8501 · API docs: http://127.0.0.1:8000/docs
 
 1. `make seed`, then start the **demo server**, **monitor** and **dashboard** in three terminals.
 2. **Overview** shows live status, uptime and latency for 5 sites.
-3. Sidebar → **Demo control** → `error_500` → **💥 Simulate incident**. The Orders API starts failing and the incident opens.
+3. Sidebar → **Demo control** → `error_500` → **Simulate incident**. The Orders API starts failing and the incident opens.
 4. **Agent investigation trace**: the agent chose its own tools. Round 1 checked history, HTTP, DNS and TCP; round 2 inspected headers and sampled latency.
 5. **Root cause & actions**: *database connection pool exhausted*, **SEV1**, with evidence and ordered actions.
-6. **✅ Approve & create ticket** creates the GitHub issue with labels (or a dry-run payload).
-7. **🩹 Fix (healthy)** → **🔁 Verify recovery** marks the incident **RESOLVED** and closes the issue with a comment.
+6. **Approve & create ticket** creates the GitHub issue with labels (or a dry-run payload).
+7. **Fix (healthy)** → **Verify recovery** marks the incident **RESOLVED** and closes the issue with a comment.
 
 The full script with talking points is in [demo/demo_script.md](demo/demo_script.md).
 

@@ -24,12 +24,12 @@ Optional 4th: `make api` → Swagger UI at http://127.0.0.1:8000/docs
 |---|---|---|
 | 0:00 | **Overview** page | "We monitor five sites, two local demo endpoints and three public APIs. KPIs, uptime and latency update live." |
 | 0:20 | **Site detail** → `demo-homepage` | "Latency over 24 h with the threshold line. This dip six hours ago became a SEV3 incident the agent handled." |
-| 0:40 | Sidebar **Demo control** → mode `error_500` → **💥 Simulate incident** | "I'll break the Orders API: it now returns 500s. Two consecutive failures open an incident, and the AI agent takes over." |
+| 0:40 | Sidebar **Demo control** → mode `error_500` → **Simulate incident** | "I'll break the Orders API: it now returns 500s. Two consecutive failures open an incident, and the AI agent takes over." |
 | 1:00 | **Agent investigation trace** tab | "The agent chose its tools itself. Round 1: confirm the failure, check history, DNS and TCP. All healthy at the network layer, so round 2 inspects headers and samples latency." |
 | 1:30 | **Root cause & actions** tab | "Structured diagnosis: database connection pool exhausted, SEV1 because it's a critical service with every request failing. Ranked causes, evidence, ordered actions." |
-| 1:50 | **✅ Approve & create ticket** | "Sensitive actions need human approval. The LangGraph run was paused and now resumes to create the GitHub issue with severity labels." |
-| 2:10 | **🎫 Open GitHub issue** (or the GitHub tab in dry-run) | "The full report is in the issue." |
-| 2:25 | Sidebar **🩹 Fix (healthy)** → **🔁 Verify recovery** | "After the fix, the agent re-checks the site, marks the incident RESOLVED, comments on the issue and closes it." |
+| 1:50 | **Approve & create ticket** | "Sensitive actions need human approval. The LangGraph run was paused and now resumes to create the GitHub issue with severity labels." |
+| 2:10 | **Open GitHub issue** (or the GitHub tab in dry-run) | "The full report is in the issue." |
+| 2:25 | Sidebar **Fix (healthy)** → **Verify recovery** | "After the fix, the agent re-checks the site, marks the incident RESOLVED, comments on the issue and closes it." |
 | 2:50 | **Timeline** tab | "Every step is audited, from detection to resolution." |
 
 ### Variations
