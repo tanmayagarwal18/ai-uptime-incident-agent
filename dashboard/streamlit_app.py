@@ -10,6 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import json  # noqa: E402
+
 import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
@@ -199,8 +201,147 @@ def site_detail_page() -> None:
 
 # ====================================================================== incidents
 def incidents_page() -> None:
+    from app.agent import runner
+    from app.reporting.report import summarize_tool_result
+
     st.header("Incidents")
-    st.info("Incident management view coming next.")
+    all_incidents = db.list_incidents(limit=500)
+    if not all_incidents:
+        st.info("No incidents yet. Use **Demo control → Simulate incident** in the sidebar to trigger one.")
+        return
+
+    f1, f2, f3 = st.columns(3)
+    status_f = f1.multiselect("Status", list(INCIDENT_ICONS), placeholder="All statuses")
+    site_f = f2.multiselect("Site", sorted({i["site"] for i in all_incidents}), placeholder="All sites")
+    sev_f = f3.multiselect("Severity", list(SEV_ICONS), placeholder="All severities")
+    incidents = [i for i in all_incidents
+                 if (not status_f or i["status"] in status_f) and (not site_f or i["site"] in site_f)
+                 and (not sev_f or i["severity"] in sev_f)]
+    st.dataframe(pd.DataFrame([{
+        "ID": f"#{i['id']}", "Status": f"{INCIDENT_ICONS.get(i['status'], '')} {i['status']}",
+        "Severity": f"{SEV_ICONS.get(i['severity'] or '', '')} {i['severity'] or '-'}", "Site": i["site"],
+        "Summary": i["summary"], "Opened (UTC)": i["opened_at"], "Resolved (UTC)": i["resolved_at"] or "-",
+        "GitHub": i["github_issue_url"] or ("dry-run" if i["github_payload_json"] else "-"),
+    } for i in incidents]), hide_index=True, width="stretch", height=min(38 * (len(incidents) + 1), 300))
+
+    ids = [i["id"] for i in incidents] or [all_incidents[0]["id"]]
+    if st.session_state.get("selected_incident") not in ids:
+        st.session_state["selected_incident"] = ids[0]
+    labels = {i["id"]: f"#{i['id']} - {i['site']} - {i['status']}" for i in all_incidents}
+    incident_id = st.selectbox("Incident", ids, format_func=lambda x: labels[x], key="selected_incident")
+    inc = db.get_incident(incident_id)
+    pending = runner.pending_action(incident_id)
+    diag = inc.get("diagnosis") or {}
+
+    st.divider()
+    head, actions = st.columns([3, 2])
+    with head:
+        st.subheader(f"#{inc['id']} - {inc['site']}")
+        st.markdown(f"**{SEV_ICONS.get(inc['severity'] or '', '')} {inc['severity'] or 'Unclassified'}** · "
+                    f"{INCIDENT_ICONS.get(inc['status'], '')} **{inc['status']}** · opened {inc['opened_at']} UTC"
+                    + (f" · resolved {inc['resolved_at']} UTC" if inc["resolved_at"] else ""))
+        st.write(inc["summary"])
+        if diag.get("impact_summary"):
+            st.markdown(f"**Impact:** {diag['impact_summary']}")
+        if inc.get("llm_mode"):
+            st.caption(f"Analysed by: {inc['llm_mode']}")
+
+    with actions:
+        st.markdown("**Actions**")
+        if pending == "approval":
+            st.warning("⏳ The agent is waiting for approval to create a GitHub issue.")
+            b1, b2 = st.columns(2)
+            if b1.button("✅ Approve & create ticket", type="primary", key="approve"):
+                with st.spinner("Creating GitHub issue..."):
+                    runner.submit_approval(incident_id, True, reviewer="dashboard")
+                st.rerun()
+            if b2.button("🚫 Reject", key="reject"):
+                runner.submit_approval(incident_id, False, reviewer="dashboard")
+                st.rerun()
+        if inc["github_issue_url"]:
+            st.link_button(f"🎫 Open GitHub issue #{inc['github_issue_number']}", inc["github_issue_url"])
+        elif inc["github_payload_json"]:
+            st.info("🎫 GitHub dry-run: issue payload recorded (see the GitHub tab). Set GITHUB_TOKEN to create real issues.")
+        if inc["status"] not in ("RESOLVED", "REJECTED"):
+            if st.button("🔁 Verify recovery", key="verify"):
+                with st.spinner("Re-checking the site..."):
+                    result = runner.verify_recovery(incident_id)
+                (st.success if result["recovered"] else st.error)(result["message"])
+                if inc["status"] == "TICKET_CREATED":
+                    st.rerun()
+        if inc["status"] in ("OPEN",) and pending is None:
+            if st.button("🤖 Run AI investigation", key="investigate"):
+                with st.spinner("Agent investigating..."):
+                    services.handle_new_incident(incident_id)
+                st.rerun()
+        if inc["status"] == "RESOLVED":
+            st.success("✅ Recovery verified - incident resolved.")
+
+    trace_tab, rca_tab, report_tab, gh_tab, timeline_tab = st.tabs(
+        ["🔎 Agent investigation trace", "🧠 Root cause & actions", "📄 Incident report", "🎫 GitHub", "🕒 Timeline"])
+
+    with trace_tab:
+        runs = db.list_tool_runs(incident_id)
+        decisions = [e for e in db.list_events(incident_id) if e["event_type"] in ("AGENT_DECISION", "INVESTIGATION_COMPLETE")]
+        if not runs:
+            st.caption("The agent has not run any tools yet.")
+        for turn in sorted({r["iteration"] for r in runs}):
+            reasoning = next((d for d in decisions if d["message"].startswith(f"Turn {turn}:")), None)
+            st.markdown(f"**Turn {turn}** - {reasoning['message'].split(': ', 1)[1] if reasoning else ''}")
+            if reasoning and reasoning.get("data_json"):
+                why = json.loads(reasoning["data_json"]).get("reasoning")
+                if why:
+                    st.caption(f"💭 {why}")
+            for r in [r for r in runs if r["iteration"] == turn]:
+                ok = (r["result"] or {}).get("ok", True) if isinstance(r["result"], dict) else True
+                with st.expander(f"{'✅' if ok else '⚠️'} `{r['tool_name']}` - "
+                                 f"{summarize_tool_result(r['tool_name'], r['result'])}  ({r['duration_ms']:.0f} ms)"):
+                    st.markdown("**Arguments**")
+                    st.json(r["args"])
+                    st.markdown("**Result**")
+                    st.json(r["result"])
+        done = next((d for d in decisions if d["event_type"] == "INVESTIGATION_COMPLETE"), None)
+        if done and done.get("data_json"):
+            st.success(f"🏁 {json.loads(done['data_json']).get('findings', '')}")
+
+    with rca_tab:
+        if not diag:
+            st.caption("No diagnosis yet.")
+        else:
+            st.markdown(f"**Severity:** {SEV_ICONS.get(diag['severity'], '')} {diag['severity']} - {diag.get('severity_reason', '')}")
+            st.markdown(f"**Overall confidence:** {round(diag.get('confidence', 0) * 100)}%")
+            st.markdown("#### Probable causes")
+            for i, c in enumerate(diag.get("probable_causes", []), 1):
+                st.markdown(f"**{i}. {c['cause']}**")
+                st.progress(float(c["confidence"]), text=f"confidence {round(c['confidence'] * 100)}%")
+                for ev in c.get("evidence", []):
+                    st.markdown(f"- {ev}")
+            st.markdown("#### Recommended actions")
+            st.markdown("\n".join(f"{i}. {a}" for i, a in enumerate(diag.get("recommended_actions", []), 1)))
+
+    with report_tab:
+        if inc["report_md"]:
+            st.download_button("⬇ Download report (.md)", inc["report_md"], file_name=f"incident-{incident_id}.md")
+            with st.container(border=True):
+                st.markdown(inc["report_md"])
+        else:
+            st.caption("Report not generated yet.")
+
+    with gh_tab:
+        payload = inc.get("github_payload")
+        if inc["github_issue_url"]:
+            st.markdown(f"Issue: [{inc['github_issue_url']}]({inc['github_issue_url']})")
+        if payload:
+            st.markdown(f"**Title:** {payload['title']}")
+            st.markdown("**Labels:** " + " ".join(f"`{lbl}`" for lbl in payload["labels"]))
+            with st.expander("Issue body"):
+                st.code(payload["body"], language="markdown")
+        else:
+            st.caption("No GitHub issue yet" + (" - awaiting approval." if pending == "approval" else "."))
+
+    with timeline_tab:
+        for e in db.list_events(incident_id):
+            st.markdown(f"`{e['timestamp']}` **{e['event_type']}** - {e['message'] or ''}")
 
 
 # ====================================================================== main
