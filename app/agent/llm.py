@@ -4,6 +4,8 @@ OpenAI-compatible server, or the offline demo AI. Also turns AI-service errors i
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any
 
 from app.config import get_settings
@@ -31,7 +33,7 @@ def _chat_model() -> Any:
         "model": s.llm_model_id,
         "api_key": s.llm_api_key,
         "temperature": 0,
-        "timeout": 60,
+        "timeout": 40,
         "max_retries": 6 if s.provider == "groq" else 2,  # Groq free tier: wait out per-minute limits
         "max_tokens": s.max_output_tokens,
     }
@@ -48,7 +50,7 @@ def _gemini(model: str) -> Any:
     s = get_settings()
     extra = {"base_url": s.gemini_base_url} if s.gemini_base_url.strip() else {}
     return ChatGoogleGenerativeAI(model=model, api_key=s.llm_api_key, reasoning_effort="low",
-                                  max_tokens=s.max_output_tokens, retries=2, request_timeout=90, **extra)
+                                  max_tokens=s.max_output_tokens, retries=1, request_timeout=40, **extra)
 
 
 def _gemini_backup() -> Any | None:
@@ -93,6 +95,21 @@ def get_analyst_llm(state: dict[str, Any] | None = None, evidence: list[dict[str
     llm = _chat_model().with_structured_output(Diagnosis, method=method)
     backup = _gemini_backup()
     return llm.with_fallbacks([backup.with_structured_output(Diagnosis, method=method)]) if backup else llm
+
+
+_call_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="llm-call")
+
+
+def invoke_with_timeout(llm: Any, messages: Any, seconds: int | None = None) -> Any:
+    """Call the model, but never wait longer than `seconds`: a slow or hanging AI service raises
+    TimeoutError so the agent can switch to the offline AI instead of stalling the incident."""
+    seconds = seconds or get_settings().llm_call_timeout_seconds
+    future = _call_pool.submit(llm.invoke, messages)
+    try:
+        return future.result(timeout=seconds)
+    except FuturesTimeout:
+        future.cancel()
+        raise TimeoutError(f"the AI service did not answer within {seconds} seconds") from None
 
 
 def get_fallback_tool_llm(state: dict[str, Any]) -> Any:
@@ -140,6 +157,8 @@ def describe_llm_error(exc: Exception) -> str:
         return "the request was too large for the model's limit"
     if status == 404 or "unknown model" in text or "model_not_found" in text:
         return f"the model '{get_settings().llm_model_id}' was not found - check the model name in .env"
+    if isinstance(exc, TimeoutError) and "did not answer within" in text:
+        return str(exc)
     if "connect" in text or "timed out" in text or "timeout" in text:
         return "the AI service could not be reached - check the internet connection"
     return f"{type(exc).__name__}: {str(exc)[:160]}"

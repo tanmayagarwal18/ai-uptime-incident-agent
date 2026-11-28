@@ -61,6 +61,45 @@ def start_investigation(incident_id: int) -> str | None:
     return pending_action(incident_id)
 
 
+def seconds_since_activity(incident_id: int) -> float | None:
+    from datetime import UTC, datetime
+
+    ts = db.last_activity(incident_id)
+    if not ts:
+        return None
+    return (datetime.now(UTC) - datetime.fromisoformat(ts)).total_seconds()
+
+
+def is_stalled(incident_id: int) -> bool:
+    """True when an investigation made no progress for a while and isn't waiting for a person."""
+    inc = db.get_incident(incident_id)
+    if not inc or inc["status"] not in ("OPEN", "INVESTIGATING") or pending_action(incident_id):
+        return False
+    idle = seconds_since_activity(incident_id)
+    return idle is None or idle > get_settings().investigation_stalled_seconds
+
+
+def restart_investigation(incident_id: int, offline: bool = False) -> str | None:
+    """Start the investigation again from scratch (optionally with the offline AI only)."""
+    if db.get_incident(incident_id) is None:
+        raise ValueError(f"Incident #{incident_id} not found")
+    graph = get_graph()
+    graph.checkpointer.delete_thread(f"incident-{incident_id}")
+    db.delete_tool_runs(incident_id)
+    db.update_incident(incident_id, status="OPEN", severity=None, diagnosis_json=None, report_md=None)
+    db.add_event(incident_id, "INVESTIGATION_RESTARTED",
+                 "Investigation restarted" + (" with the offline demo AI" if offline else ""))
+    log.info("Restarting investigation of incident #%s (offline=%s)", incident_id, offline)
+    try:
+        graph.invoke({"incident_id": incident_id, "llm_fallback": offline}, _config(incident_id))
+    except Exception as exc:
+        log.exception("Restarted agent failed on incident #%s", incident_id)
+        db.add_event(incident_id, "AGENT_ERROR", f"Agent error: {type(exc).__name__}: {exc}")
+        db.update_incident(incident_id, status="OPEN")
+        raise
+    return pending_action(incident_id)
+
+
 def submit_approval(incident_id: int, approved: bool, reviewer: str = "dashboard") -> str | None:
     """Resume a graph paused at the approval gate."""
     if pending_action(incident_id) != "approval":

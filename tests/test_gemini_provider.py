@@ -27,6 +27,7 @@ class FakeGemini(BaseHTTPRequestHandler):
     requests: list[dict] = []
     fail_with: int | None = None
     busy_models: set[str] = set()
+    delay = 0.0
     site_url = ""
 
     def do_GET(self):  # noqa: N802 - the monitored site
@@ -45,6 +46,10 @@ class FakeGemini(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         type(self).requests.append({"path": self.path, "key": self.headers.get("x-goog-api-key"), "body": body})
+        if type(self).delay:
+            import time
+
+            time.sleep(type(self).delay)
         if any(f"/models/{m}:" in self.path for m in type(self).busy_models):
             self._send(503, {"error": {"code": 503, "message": "This model is currently experiencing high demand.",
                                        "status": "UNAVAILABLE"}})
@@ -77,7 +82,7 @@ class FakeGemini(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def fake_gemini(monkeypatch):
-    FakeGemini.requests, FakeGemini.fail_with, FakeGemini.busy_models = [], None, set()
+    FakeGemini.requests, FakeGemini.fail_with, FakeGemini.busy_models, FakeGemini.delay = [], None, set(), 0.0
     srv = HTTPServer(("127.0.0.1", 0), FakeGemini)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{srv.server_port}"
@@ -146,3 +151,38 @@ def test_busy_main_model_switches_to_backup(fake_gemini):
     assert not inc["llm_mode"].startswith("Offline")  # real AI finished the job
     assert inc["diagnosis"]["probable_causes"][0]["cause"] == "Database connection pool exhausted"
     assert any("/models/gemini-3.5-flash-lite:" in r["path"] for r in FakeGemini.requests)
+
+
+def test_hanging_ai_service_times_out_and_falls_back(fake_gemini, monkeypatch):
+    """A Gemini call that never answers must not leave the incident stuck in 'AI investigating'."""
+    FakeGemini.delay = 4
+    monkeypatch.setenv("LLM_CALL_TIMEOUT_SECONDS", "1")
+    get_settings.cache_clear()
+    incident_id = _incident()
+    assert runner.start_investigation(incident_id) == "approval"
+    inc = db.get_incident(incident_id)
+    assert inc["status"] == "AWAITING_APPROVAL"
+    assert "did not answer within 1 seconds" in inc["llm_mode"]
+
+
+def test_stalled_incident_can_be_restarted(fake_gemini, monkeypatch):
+    incident_id = _incident()
+    # simulate a run that died mid-way: status INVESTIGATING, no pending action, old activity
+    db.update_incident(incident_id, status="INVESTIGATING")
+    monkeypatch.setenv("INVESTIGATION_STALLED_SECONDS", "0")
+    get_settings.cache_clear()
+    assert runner.is_stalled(incident_id)
+
+    assert runner.restart_investigation(incident_id, offline=True) == "approval"
+    inc = db.get_incident(incident_id)
+    assert inc["status"] == "AWAITING_APPROVAL"
+    assert inc["llm_mode"] == "Offline demo AI (chosen manually)"
+    assert not runner.is_stalled(incident_id)
+    events = [e["event_type"] for e in db.list_events(incident_id)]
+    assert "INVESTIGATION_RESTARTED" in events
+
+    # and again with the real (fake) Gemini: fresh thread, no leftovers from the first run
+    FakeGemini.requests = []
+    assert runner.restart_investigation(incident_id) == "approval"
+    assert db.get_incident(incident_id)["llm_mode"].endswith("Google Gemini (free)")
+    assert {t["tool_name"] for t in db.list_tool_runs(incident_id)} == {"http_probe", "tcp_port_check"}

@@ -358,6 +358,19 @@ def incidents_page() -> None:
         show(ui.timeline(db.list_events(incident_id)))
 
 
+def run_restart(incident_id: int, offline: bool) -> None:
+    from app.agent import runner
+
+    label = "The offline demo AI is analysing..." if offline else "The AI is investigating..."
+    with st.spinner(label):
+        try:
+            runner.restart_investigation(incident_id, offline=offline)
+            flash("success", "Investigation finished.")
+        except Exception as exc:  # noqa: BLE001
+            flash("error", f"The investigation failed: {exc}. Try 'Finish with offline AI'.")
+    st.rerun()
+
+
 def action_bar(inc: dict, pending: str | None, incident_id: int) -> None:
     """The one thing the user should do next for this incident, explained in plain words."""
     from app.agent import runner
@@ -378,14 +391,28 @@ def action_bar(inc: dict, pending: str | None, incident_id: int) -> None:
                         f"{ui.duration(inc['opened_at'], inc['resolved_at'])}."))
     elif status == "REJECTED":
         show(ui.callout("idle", "Dismissed", "This incident was dismissed, so no ticket was filed."))
+    elif status in ("INVESTIGATING", "OPEN") and pending is None and runner.is_stalled(incident_id):
+        idle = runner.seconds_since_activity(incident_id)
+        since = f"for {int(idle // 60)} min" if idle else "yet"
+        show(ui.callout("decide", "The investigation is not making progress",
+                        f"Nothing has happened {since}. The AI service may be overloaded, or the app was closed "
+                        "while it was working. Restart it, or let the offline demo AI finish it right away."))
+        r1, r2, _ = st.columns([2, 2, 3])
+        if r1.button("Restart investigation", type="primary", key="restart", width="stretch"):
+            run_restart(incident_id, offline=False)
+        if r2.button("Finish with offline AI", key="restart_offline", width="stretch"):
+            run_restart(incident_id, offline=True)
     elif status == "INVESTIGATING":
-        show(ui.callout("wait", "The AI is investigating", "Results will appear here in a moment."))
+        tests = len(db.list_tool_runs(incident_id))
+        idle = runner.seconds_since_activity(incident_id) or 0
+        show(ui.callout("wait", "The AI is investigating",
+                        f"{tests} test{'s' if tests != 1 else ''} run so far. This page updates automatically; "
+                        f"if nothing changes for {get_settings().investigation_stalled_seconds // 60} minutes "
+                        f"you can restart it (last activity {int(idle)} s ago)."))
     elif status == "OPEN" and pending is None:
         show(ui.callout("idle", "Not investigated yet", "Start the AI investigation to find the cause."))
         if st.button("Run AI investigation", key="investigate", type="primary"):
-            with st.spinner("The AI is investigating..."):
-                services.handle_new_incident(incident_id)
-            st.rerun()
+            run_restart(incident_id, offline=False)
 
     cols = st.columns([2.2, 1.2, 1.8, 2.8])
     slot = 0
@@ -423,7 +450,10 @@ def main() -> None:
     elif page == "Site detail":
         st.fragment(run_every=15 if auto else None)(site_detail_page)()
     else:
-        incidents_page()
+        selected = st.session_state.get("selected_incident")
+        inc = db.get_incident(selected) if selected else None
+        investigating = bool(inc and inc["status"] == "INVESTIGATING")
+        st.fragment(run_every=5 if (auto and investigating) else None)(incidents_page)()
 
 
 main()

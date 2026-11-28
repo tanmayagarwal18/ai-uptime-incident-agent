@@ -289,3 +289,20 @@ def list_tool_runs(incident_id: int) -> list[dict[str, Any]]:
         r["args"] = json.loads(r["args_json"]) if r["args_json"] else {}
         r["result"] = json.loads(r["result_json"]) if r["result_json"] else None
     return rows
+
+
+def delete_tool_runs(incident_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM tool_runs WHERE incident_id=?", (incident_id,))
+
+
+def last_activity(incident_id: int) -> str | None:
+    """Timestamp of the most recent event or tool run for an incident."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT MAX(ts) FROM (
+                 SELECT MAX(timestamp) AS ts FROM incident_events WHERE incident_id=?
+                 UNION ALL SELECT MAX(timestamp) FROM tool_runs WHERE incident_id=?)""",
+            (incident_id, incident_id),
+        ).fetchone()
+    return row[0] if row else None

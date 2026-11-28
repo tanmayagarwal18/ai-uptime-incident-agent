@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     groq_model: str = "openai/gpt-oss-120b"
     force_mock_llm: bool = False
     llm_fallback_to_mock: bool = True       # if the AI service fails (quota, auth), finish with offline analysis
+    llm_call_timeout_seconds: int = 60      # hard limit per AI step; slower answers switch to the fallback
+    investigation_stalled_seconds: int = 180  # no progress for this long -> dashboard offers a restart
     llm_max_tool_result_chars: int = 0      # 0 = provider default (Groq's free tier needs small requests)
     llm_max_output_tokens: int = 0          # 0 = provider default
 

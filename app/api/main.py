@@ -136,6 +136,16 @@ async def verify(incident_id: int) -> dict[str, Any]:
     return await run_in_threadpool(verify_recovery, incident_id)
 
 
+@app.post("/incidents/{incident_id}/restart", tags=["incidents"])
+async def restart(incident_id: int, offline: bool = False) -> dict[str, Any]:
+    """Restart a stalled investigation from scratch (offline=true uses the offline demo AI)."""
+    from app.agent.runner import restart_investigation
+
+    _incident_or_404(incident_id)
+    pending = await run_in_threadpool(restart_investigation, incident_id, offline)
+    return {"status": db.get_incident(incident_id)["status"], "pending_action": pending}
+
+
 @app.post("/demo/simulate", tags=["demo"])
 async def simulate(body: SimulateIn) -> dict[str, Any]:
     """Switch the demo server into a failure mode and run checks until an incident opens."""

@@ -15,6 +15,7 @@ from app.agent.llm import (
     get_fallback_analyst_llm,
     get_fallback_tool_llm,
     get_tool_llm,
+    invoke_with_timeout,
     llm_mode,
     message_text,
 )
@@ -54,8 +55,9 @@ def triage_node(state: AgentState) -> dict[str, Any]:
         critical=site.get("critical", False), description=site.get("description") or "-",
         summary=inc.get("summary"), checks=_format_checks(checks),
     )
-    db.update_incident(incident_id, status="INVESTIGATING", llm_mode=llm_mode())
-    db.add_event(incident_id, "INVESTIGATION_STARTED", f"AI agent started investigating (LLM: {llm_mode()})")
+    mode = "Offline demo AI (chosen manually)" if state.get("llm_fallback") else llm_mode()
+    db.update_incident(incident_id, status="INVESTIGATING", llm_mode=mode)
+    db.add_event(incident_id, "INVESTIGATION_STARTED", f"AI agent started investigating (LLM: {mode})")
     system = INVESTIGATOR_SYSTEM.format(max_iterations=get_settings().agent_max_iterations)
     return {
         "site": site,
@@ -71,7 +73,7 @@ def investigate_node(state: AgentState) -> dict[str, Any]:
     """One reasoning turn: the LLM looks at the evidence so far and either calls tools or stops."""
     update: dict[str, Any] = {}
     try:
-        ai: AIMessage = get_tool_llm(state).invoke(state["messages"])
+        ai: AIMessage = invoke_with_timeout(get_tool_llm(state), state["messages"])
     except Exception as exc:  # noqa: BLE001 - AI service failure (quota, auth, network)
         update = _fall_back(state, exc)
         ai = get_fallback_tool_llm(state).invoke(state["messages"])
@@ -180,7 +182,7 @@ def analyze_node(state: AgentState) -> dict[str, Any]:
     messages = [SystemMessage(content=ANALYST_SYSTEM), HumanMessage(content=prompt)]
     update: dict[str, Any] = {}
     try:
-        diagnosis = get_analyst_llm(state, evidence).invoke(messages)
+        diagnosis = invoke_with_timeout(get_analyst_llm(state, evidence), messages)
     except Exception as exc:  # noqa: BLE001 - AI service failure
         update = _fall_back(state, exc)
         diagnosis = get_fallback_analyst_llm(state, evidence).invoke(messages)
