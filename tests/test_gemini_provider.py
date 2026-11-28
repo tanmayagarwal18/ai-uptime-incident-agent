@@ -186,3 +186,37 @@ def test_stalled_incident_can_be_restarted(fake_gemini, monkeypatch):
     assert runner.restart_investigation(incident_id) == "approval"
     assert db.get_incident(incident_id)["llm_mode"].endswith("Google Gemini (free)")
     assert {t["tool_name"] for t in db.list_tool_runs(incident_id)} == {"http_probe", "tcp_port_check"}
+
+
+def test_run_that_died_midway_is_detected_and_restarted(fake_gemini, monkeypatch):
+    """Reproduces a real report: the app stopped during the investigation, leaving a saved checkpoint
+    whose next step is 'tools'. That must count as stalled (not 'still running') and be restartable."""
+    import app.agent.graph as graph_module
+
+    def process_died(state):
+        raise SystemExit("app closed mid-investigation")  # not caught like a normal error
+
+    monkeypatch.setattr(graph_module, "tools_node", process_died)
+    runner._graph_cache.clear()  # rebuild the graph with the crashing node
+    incident_id = _incident()
+    with pytest.raises(SystemExit):
+        runner.start_investigation(incident_id)
+    snapshot = runner.get_graph().get_state(runner._config(incident_id))
+    assert snapshot.next == ("tools",)                      # progress was saved part-way
+    assert db.get_incident(incident_id)["status"] == "INVESTIGATING"
+    assert runner.pending_action(incident_id) is None       # nobody is waiting on a person
+
+    monkeypatch.setenv("INVESTIGATION_STALLED_SECONDS", "0")
+    get_settings.cache_clear()
+    assert runner.is_stalled(incident_id)
+
+    monkeypatch.undo()  # restore the real tools node
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaTEST")
+    monkeypatch.setenv("GEMINI_BASE_URL", f"http://127.0.0.1:{fake_gemini.server_port}")
+    monkeypatch.setenv("GITHUB_DRY_RUN", "true")
+    monkeypatch.setenv("DB_PATH", db.get_settings().db_path)
+    get_settings.cache_clear()
+    runner._graph_cache.clear()
+    assert runner.restart_investigation(incident_id) == "approval"
+    assert db.get_incident(incident_id)["status"] == "AWAITING_APPROVAL"

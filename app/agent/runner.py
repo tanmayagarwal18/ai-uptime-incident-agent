@@ -40,12 +40,19 @@ def _config(incident_id: int) -> dict[str, Any]:
 
 
 def pending_action(incident_id: int) -> str | None:
-    """Which human action the paused graph is waiting for: 'approval', 'await_recovery' or None."""
+    """Which human action the paused graph is waiting for: 'approval', 'await_recovery' or None.
+
+    Only a graph that is actually paused at a human step counts. A run that stopped part-way
+    (app closed or crashed mid-investigation) also has a 'next' node saved, but it is not waiting
+    for anyone - treating it as pending would hide the restart buttons and leave it stuck."""
     snapshot = get_graph().get_state(_config(incident_id))
     if not snapshot or not snapshot.next:
         return None
-    node = snapshot.next[0]
-    return {"approval_gate": "approval", "await_recovery": "await_recovery"}.get(node, node)
+    action = {"approval_gate": "approval", "await_recovery": "await_recovery"}.get(snapshot.next[0])
+    if action is None:
+        return None
+    interrupted = any(getattr(t, "interrupts", None) for t in (snapshot.tasks or ()))
+    return action if interrupted else None
 
 
 def start_investigation(incident_id: int) -> str | None:
