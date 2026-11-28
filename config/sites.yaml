@@ -1,6 +1,4 @@
-# Monitored targets.
-# failure_threshold = consecutive failed checks before an incident is opened.
-# critical = true raises the severity the agent assigns to outages.
+
 
 sites:
   # --- Local demo server (python -m uvicorn demo.flaky_server:app --port 8001) ---
