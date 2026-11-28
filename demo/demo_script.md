@@ -26,7 +26,7 @@ Optional 4th: `make api` → Swagger UI at http://127.0.0.1:8000/docs
 | 0:00 | **Overview** page | "We monitor five sites, two local demo endpoints and three public APIs. KPIs, uptime and latency update live." |
 | 0:20 | **Site detail** → `demo-homepage` | "Latency over 24 h with the threshold line. This dip six hours ago became a SEV3 incident the agent handled." |
 | 0:40 | Sidebar **Demo control** → mode `error_500` → **Simulate incident** | "I'll break the Orders API: it now returns 500s. Two consecutive failures open an incident, and the AI agent takes over." |
-| 1:00 | **Agent investigation trace** tab | "The agent chose its tools itself. Round 1: confirm the failure, check history, DNS and TCP. All healthy at the network layer, so round 2 inspects headers and samples latency." |
+| 1:00 | **How the AI investigated** tab (the incident page opens immediately; tests appear live while the AI works) | "The agent chose its tools itself. Round 1: confirm the failure, check history, DNS and TCP. All healthy at the network layer, so round 2 inspects headers and samples latency." |
 | 1:30 | **Root cause & actions** tab | "Structured diagnosis: database connection pool exhausted, SEV1 because it's a critical service with every request failing. Ranked causes, evidence, ordered actions." |
 | 1:50 | **Approve & create ticket** | "Sensitive actions need human approval. The LangGraph run was paused and now resumes to create the GitHub issue with severity labels." |
 | 2:10 | **Open GitHub issue** (or the GitHub tab in dry-run) | "The full report is in the issue." |
@@ -54,3 +54,6 @@ python scripts/simulate_incident.py --mode error_500 --approve --heal
 3. "It turns the evidence into a ranked root cause, a SEV1–SEV4 severity and concrete actions, written up as a report."
 4. "With human approval it opens a GitHub issue, then verifies recovery and closes the loop automatically."
 5. "Everything is persisted in SQLite and visible in the dashboard, so the engineer starts with answers, not just an alert."
+
+### Order matters
+Approve the ticket **before** clicking **Fix the demo site**. The Fix button stays disabled while the AI is still investigating; if you fix early anyway, the dashboard takes you back to the incident and tells you the next step.

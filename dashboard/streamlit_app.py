@@ -30,6 +30,14 @@ COLORS = {"line": "#0B7A88", "fill": "rgba(24,183,199,0.12)", "UP": "#16A34A", "
 
 
 @st.cache_resource
+def agent_workers():
+    """Background threads that run AI investigations without blocking the page."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    return ThreadPoolExecutor(max_workers=2, thread_name_prefix="agent")
+
+
+@st.cache_resource
 def _bootstrap() -> bool:
     services.bootstrap()
     return True
@@ -105,23 +113,37 @@ def demo_control() -> None:
     show(f'<div class="side-help">Right now: <b>{ui.e(ui.DEMO_MODES.get(current["mode"], current["mode"]))}</b></div>')
     mode = st.selectbox("Problem to simulate", [m for m in modes if m != "healthy"],
                         format_func=lambda m: ui.DEMO_MODES.get(m, m), key="demo_mode_choice")
+    open_inc = services.demo_incident_in_progress()
+    investigating = bool(open_inc and open_inc["status"] in ("OPEN", "INVESTIGATING"))
     if st.button("Simulate incident", type="primary", key="simulate", width="stretch"):
-        with st.spinner("Breaking the demo site and letting the AI investigate..."):
+        with st.spinner("Breaking the demo site and running checks..."):
             try:
-                incident_id = services.simulate_incident(mode)
+                incident_id = services.simulate_incident(mode, run_agent=False)
             except Exception as exc:  # noqa: BLE001
                 st.error(f"Simulation failed: {exc}")
                 return
         if incident_id:
+            inc = db.get_incident(incident_id)
+            if inc and inc["status"] == "OPEN":
+                services.start_investigation_in_background(incident_id, agent_workers())
             go_to_incident(incident_id)
             st.rerun()
         else:
             st.warning("No incident opened yet. The site must fail several checks in a row; click Run checks now.")
-    if st.button("Fix the demo site", key="heal", width="stretch",
+    if st.button("Fix the demo site", key="heal", width="stretch", disabled=investigating,
                  help="Make the demo site healthy again, then verify recovery on the incident"):
         services.set_demo_mode("healthy")
-        flash("success", "The demo site is fixed. Open the incident and click Verify recovery.")
+        if open_inc:
+            step = {"AWAITING_APPROVAL": "it still needs your approval; approve it, then click Verify recovery",
+                    "TICKET_CREATED": "click Verify recovery to confirm and close it"}.get(
+                open_inc["status"], "click Verify recovery")
+            flash("success", f"The demo site is fixed. Incident #{open_inc['id']} is still open: {step}.")
+            go_to_incident(open_inc["id"])
+        else:
+            flash("success", "The demo site is fixed.")
         st.rerun()
+    if investigating:
+        st.caption("Fixing is available once the AI has finished investigating.")
 
 
 # ====================================================================== overview
@@ -281,6 +303,11 @@ def incidents_page() -> None:
 
     inc = db.get_incident(incident_id)
     pending = runner.pending_action(incident_id)
+    flag = f"_was_investigating_{incident_id}"
+    if inc["status"] == "INVESTIGATING":
+        st.session_state[flag] = True
+    elif st.session_state.pop(flag, False):
+        st.rerun()  # investigation just finished: refresh the whole page (sidebar buttons included)
     diag = inc.get("diagnosis") or {}
     site_url = ((inc.get("trigger") or {}).get("site") or {}).get("url")
     show(ui.case_header(inc, site_url))
@@ -359,15 +386,18 @@ def incidents_page() -> None:
 
 
 def run_restart(incident_id: int, offline: bool) -> None:
+    """Restart in the background; the incident page shows progress live."""
     from app.agent import runner
 
-    label = "The offline demo AI is analysing..." if offline else "The AI is investigating..."
-    with st.spinner(label):
+    runner.prepare_restart(incident_id, offline=offline)
+
+    def work() -> None:
         try:
-            runner.restart_investigation(incident_id, offline=offline)
-            flash("success", "Investigation finished.")
-        except Exception as exc:  # noqa: BLE001
-            flash("error", f"The investigation failed: {exc}. Try 'Finish with offline AI'.")
+            runner.restart_investigation(incident_id, offline=offline, prepared=True)
+        except Exception:  # noqa: BLE001 - recorded as an AGENT_ERROR event by the runner
+            pass
+
+    agent_workers().submit(work)
     st.rerun()
 
 

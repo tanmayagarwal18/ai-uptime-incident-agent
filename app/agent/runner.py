@@ -86,17 +86,23 @@ def is_stalled(incident_id: int) -> bool:
     return idle is None or idle > get_settings().investigation_stalled_seconds
 
 
-def restart_investigation(incident_id: int, offline: bool = False) -> str | None:
-    """Start the investigation again from scratch (optionally with the offline AI only)."""
+def prepare_restart(incident_id: int, offline: bool = False) -> None:
+    """Clear the previous attempt (saved graph state, tool runs, diagnosis) so a restart starts clean."""
     if db.get_incident(incident_id) is None:
         raise ValueError(f"Incident #{incident_id} not found")
-    graph = get_graph()
-    graph.checkpointer.delete_thread(f"incident-{incident_id}")
+    get_graph().checkpointer.delete_thread(f"incident-{incident_id}")
     db.delete_tool_runs(incident_id)
-    db.update_incident(incident_id, status="OPEN", severity=None, diagnosis_json=None, report_md=None)
+    db.update_incident(incident_id, status="INVESTIGATING", severity=None, diagnosis_json=None, report_md=None)
     db.add_event(incident_id, "INVESTIGATION_RESTARTED",
                  "Investigation restarted" + (" with the offline demo AI" if offline else ""))
     log.info("Restarting investigation of incident #%s (offline=%s)", incident_id, offline)
+
+
+def restart_investigation(incident_id: int, offline: bool = False, prepared: bool = False) -> str | None:
+    """Start the investigation again from scratch (optionally with the offline AI only)."""
+    if not prepared:
+        prepare_restart(incident_id, offline)
+    graph = get_graph()
     try:
         graph.invoke({"incident_id": incident_id, "llm_fallback": offline}, _config(incident_id))
     except Exception as exc:

@@ -62,22 +62,34 @@ def set_demo_mode(mode: str) -> dict[str, Any]:
     return r.json()
 
 
-def simulate_incident(mode: str = "error_500", site_name: str = DEMO_SITE) -> int | None:
-    """Break the demo server, run enough checks to trip the detector, and let the agent investigate.
-    Returns the incident id (new, or the one already open for the site)."""
+def simulate_incident(mode: str = "error_500", site_name: str = DEMO_SITE, run_agent: bool = True) -> int | None:
+    """Break the demo server, run enough checks to trip the detector, and (optionally) let the agent
+    investigate. Returns the incident id (new, or the one already open for the site)."""
     site = get_site(site_name)
     if site is None:
         raise ValueError(f"Site {site_name} not configured")
     set_demo_mode(mode)
     log.info("Demo server switched to %s; running %d checks", mode, site.failure_threshold)
     for i in range(site.failure_threshold):
-        new = run_checks_now([site_name])
+        new = run_checks_now([site_name], run_agent=run_agent)
         if new:
             return new[0]
         if i < site.failure_threshold - 1:
             time.sleep(0.5)
     existing = db.open_incident_for_site(site_name)
     return existing["id"] if existing else None
+
+
+def start_investigation_in_background(incident_id: int, executor: Any) -> None:
+    """Mark the incident as being investigated right away, then run the agent on a worker thread
+    so the dashboard stays responsive and can show progress live."""
+    db.update_incident(incident_id, status="INVESTIGATING")
+    executor.submit(handle_new_incident, incident_id)
+
+
+def demo_incident_in_progress(site_name: str = DEMO_SITE) -> dict[str, Any] | None:
+    """The open incident for the demo site, if any."""
+    return db.open_incident_for_site(site_name)
 
 
 # ------------------------------------------------------------------ stats
